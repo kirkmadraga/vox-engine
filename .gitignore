@@ -27,3 +27,6 @@ config.yaml
 
 # Local planning doc (kept up to date, not committed)
 /SPEC.md
+
+# Small committed test fixtures
+!/internal/voice/testdata/*.opus

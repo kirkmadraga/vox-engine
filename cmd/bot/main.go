@@ -9,13 +9,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/gateway"
-	"github.com/disgoorg/snowflake/v2"
+	disgovoice "github.com/disgoorg/disgo/voice"
 
 	"bot/internal/access"
 	"bot/internal/access/jsonfile"
@@ -23,6 +25,7 @@ import (
 	"bot/internal/config"
 	"bot/internal/discordio"
 	"bot/internal/router"
+	"bot/internal/voice"
 )
 
 func main() {
@@ -76,11 +79,35 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		logger.Info("access state loaded", "file", cfg.StateFile, "guilds", len(snap.Guilds), "grants", len(snap.Grants))
 	}
 
+	// Voice: dave-go provides DAVE end-to-end encryption, which Discord requires.
+	dave := &discordio.DAVE{}
+	client, err := disgo.New(cfg.Token,
+		bot.WithLogger(libLogger),
+		bot.WithGatewayConfigOpts(gateway.WithIntents(
+			gateway.IntentGuilds,
+			gateway.IntentGuildMessages,
+			gateway.IntentGuildVoiceStates, // voice connections, and finding the caller's channel
+		)),
+		// Only voice states are cached: play needs the caller's current channel.
+		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
+		bot.WithVoiceManagerConfigOpts(disgovoice.WithDaveSessionCreateFunc(dave.CreateFunc())),
+		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
+	)
+	if err != nil {
+		return fmt.Errorf("create discord client: %w", err)
+	}
+	logger.Info("voice: DAVE enabled via dave-go")
+
+	// Playback is bound to ctx: on shutdown it stops and leaves the channel.
+	player := voice.NewPlayer(ctx, discordio.VoiceConnector{Manager: client.VoiceManager, DAVE: dave}, nil, logger)
+	tonePath := filepath.Join(cfg.CacheDir, "tone.opus")
+
 	// Allow validates command names against the registry it is part of.
 	var registry *commands.Registry
 	known := func(name string) bool { _, ok := registry.Lookup(name); return ok }
 	registry, err = commands.NewRegistry(
 		commands.Ping{},
+		commands.Play{Voice: discordio.VoiceStates{Caches: client.Caches}, Player: player, TonePath: tonePath, Logger: logger},
 		commands.Allow{Access: policy, Known: known},
 		commands.Deny{Access: policy},
 		commands.AccessList{Access: policy},
@@ -89,19 +116,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		return err
 	}
 
-	// The router needs the bot's own ID, which is only known after the client exists.
-	var client *bot.Client
-	selfID := func() snowflake.ID { return client.ID() }
-	r := router.New(selfID, registry, policy, logger)
-
-	client, err = disgo.New(cfg.Token,
-		bot.WithLogger(libLogger),
-		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuilds, gateway.IntentGuildMessages)),
-		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
-	)
-	if err != nil {
-		return fmt.Errorf("create discord client: %w", err)
-	}
+	r := router.New(client.ID, registry, policy, logger)
 	client.AddEventListeners(bot.NewListenerFunc(discordio.GuildMessageHandler(ctx, r, client.Rest)))
 
 	if err := client.OpenGateway(ctx); err != nil {
@@ -111,6 +126,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 
 	<-ctx.Done()
 	logger.Info("shutting down")
+	player.Wait() // ctx is cancelled, so playback stops and leaves voice first
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client.Close(closeCtx)
