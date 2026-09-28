@@ -24,6 +24,7 @@ type Loaded struct {
 	Path     string
 	Title    string
 	Duration time.Duration
+	OnStart  func() // optional: called when the track starts playing (e.g. to record the play)
 }
 
 // LoadFunc fetches a track's audio (e.g. from the cache, downloading if needed).
@@ -31,6 +32,7 @@ type LoadFunc func(ctx context.Context) (Loaded, error)
 
 // Track is one queued request.
 type Track struct {
+	Key          string        // cache key (video ID); queued and playing keys are reported by InUse
 	Title        string        // may be empty until loaded
 	URL          string        // shown when there is no title yet
 	Duration     time.Duration // 0 if unknown
@@ -341,6 +343,9 @@ func (s *session) play(ctx context.Context, it *item) {
 	}
 
 	m.notify(it.TextChannel, fmt.Sprintf("Now playing: %s%s, requested by <@%s>.", name, formatLength(duration), it.RequestedBy))
+	if loaded.OnStart != nil {
+		loaded.OnStart()
+	}
 	frames, err := voice.PlayFile(ctx, m.clock, s.conn, loaded.Path)
 	log.Info("queue: track finished", "track", it.URL, "frames", frames, "err", err)
 	if err != nil && ctx.Err() == nil {
@@ -467,3 +472,22 @@ var markdownEscaper = strings.NewReplacer(
 // EscapeMarkdown stops user-controlled text (e.g. video titles) from being
 // rendered as Discord markdown.
 func EscapeMarkdown(s string) string { return markdownEscaper.Replace(s) }
+
+// InUse returns the keys of every queued or playing track, across all guilds.
+// The cache uses it to never delete audio that is about to be played.
+func (m *Manager) InUse() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := map[string]bool{}
+	for _, g := range m.guilds {
+		if g.current != nil && g.current.Key != "" {
+			keys[g.current.Key] = true
+		}
+		for _, it := range g.pending {
+			if it.Key != "" {
+				keys[it.Key] = true
+			}
+		}
+	}
+	return keys
+}

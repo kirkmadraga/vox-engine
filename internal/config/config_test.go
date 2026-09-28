@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/disgoorg/snowflake/v2"
 )
@@ -38,8 +39,8 @@ max_queue_length: 25
 	if cfg.Token != "tok" || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 {
 		t.Errorf("unexpected cfg: %+v", cfg)
 	}
-	if cfg.StateFile != "data/access.json" {
-		t.Errorf("StateFile default = %q", cfg.StateFile)
+	if cfg.Database != "data/bot.db" || cfg.CacheMaxBytes != 512<<20 || cfg.CacheMaxAge != 12*time.Hour {
+		t.Errorf("defaults: database=%q max_bytes=%d max_age=%v", cfg.Database, cfg.CacheMaxBytes, cfg.CacheMaxAge)
 	}
 }
 
@@ -80,15 +81,19 @@ func TestParseErrors(t *testing.T) {
 	cases := map[string]struct {
 		yaml, token, wantErr string
 	}{
-		"missing token":     {"", "", "DISCORD_TOKEN"},
-		"blank token":       {"", "   ", "DISCORD_TOKEN"},
-		"malformed id":      {"owner_user_ids: [\"abc\"]\n", "tok", "owner_user_ids[0]"},
-		"zero id":           {"owner_user_ids: [\"0\"]\n", "tok", "owner_user_ids[0]"},
-		"unknown key":       {"owner_ids: []\n", "tok", "owner_ids"},
-		"bad jobs":          {"max_concurrent_jobs: 0\n", "tok", "max_concurrent_jobs"},
-		"bad queue length":  {"max_queue_length: 0\n", "tok", "max_queue_length"},
-		"negative duration": {"max_duration_seconds: -5\n", "tok", "max_duration_seconds"},
-		"invalid yaml":      {"owner_user_ids: [\n", "tok", "parse config"},
+		"missing token":      {"", "", "DISCORD_TOKEN"},
+		"blank token":        {"", "   ", "DISCORD_TOKEN"},
+		"malformed id":       {"owner_user_ids: [\"abc\"]\n", "tok", "owner_user_ids[0]"},
+		"zero id":            {"owner_user_ids: [\"0\"]\n", "tok", "owner_user_ids[0]"},
+		"unknown key":        {"owner_ids: []\n", "tok", "owner_ids"},
+		"bad jobs":           {"max_concurrent_jobs: 0\n", "tok", "max_concurrent_jobs"},
+		"bad queue length":   {"max_queue_length: 0\n", "tok", "max_queue_length"},
+		"negative cache cap": {"cache_max_bytes: -1\n", "tok", "cache_max_bytes"},
+		"bad cache age":      {"cache_max_age: soon\n", "tok", "cache_max_age"},
+		"negative cache age": {"cache_max_age: -1h\n", "tok", "cache_max_age"},
+		"old state_file key": {"state_file: ./data/access.json\n", "tok", "state_file"},
+		"negative duration":  {"max_duration_seconds: -5\n", "tok", "max_duration_seconds"},
+		"invalid yaml":       {"owner_user_ids: [\n", "tok", "parse config"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -124,5 +129,47 @@ func TestLoadDotEnv(t *testing.T) {
 	}
 	if got := os.Getenv("VOXTEST_DOTENV_KEY"); got != "from-file" {
 		t.Errorf("got %q, want from-file", got)
+	}
+}
+
+func TestParseCacheSettings(t *testing.T) {
+	cases := map[string]struct {
+		yaml     string
+		db       string
+		maxBytes int64
+		maxAge   time.Duration
+	}{
+		"explicit": {"database: ./x/y.db\ncache_max_bytes: 536870912\ncache_max_age: 12h\n", "./x/y.db", 536870912, 12 * time.Hour},
+		"disabled": {"cache_max_bytes: 0\ncache_max_age: \"0\"\n", "data/bot.db", 0, 0},
+		"minutes":  {"cache_max_age: 90m\n", "data/bot.db", 512 << 20, 90 * time.Minute},
+	}
+	for name, c := range cases {
+		cfg, err := Parse([]byte(c.yaml), env("tok"))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if cfg.Database != c.db || cfg.CacheMaxBytes != c.maxBytes || cfg.CacheMaxAge != c.maxAge {
+			t.Errorf("%s: got %q %d %v", name, cfg.Database, cfg.CacheMaxBytes, cfg.CacheMaxAge)
+		}
+	}
+}
+
+func TestParseTestTone(t *testing.T) {
+	cfg, _ := Parse([]byte(""), env("tok"))
+	if cfg.TestTone != "assets/tone.opus" {
+		t.Errorf("default test_tone = %q", cfg.TestTone)
+	}
+	cfg, _ = Parse([]byte("test_tone: /opt/bot/tone.opus\n"), env("tok"))
+	if cfg.TestTone != "/opt/bot/tone.opus" {
+		t.Errorf("test_tone = %q", cfg.TestTone)
+	}
+}
+
+// The committed tone must exist where the default points (tests run in this
+// package's directory, so go up to the repository root).
+func TestDefaultTestToneIsCommitted(t *testing.T) {
+	if _, err := os.Stat(filepath.Join("..", "..", DefaultTestTone)); err != nil {
+		t.Errorf("default test tone missing: %v", err)
 	}
 }

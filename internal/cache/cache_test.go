@@ -3,8 +3,10 @@ package cache
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,60 @@ import (
 )
 
 const vid = "jNQXAC9IVRw"
+
+// memIndex is an in-package Index (cachetest.Memory can't be imported here:
+// it imports this package).
+type memIndex struct {
+	mu   sync.Mutex
+	recs map[string]Record
+}
+
+func newMemIndex() *memIndex { return &memIndex{recs: map[string]Record{}} }
+
+func (m *memIndex) Put(_ context.Context, r Record) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recs[r.ID] = r
+	return nil
+}
+func (m *memIndex) Get(_ context.Context, id string) (Record, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.recs[id]
+	return r, ok, nil
+}
+func (m *memIndex) MarkPlayed(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.recs[id]; ok {
+		r.LastPlayed, r.PlayCount = at, r.PlayCount+1
+		m.recs[id] = r
+	}
+	return nil
+}
+func (m *memIndex) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.recs, id)
+	return nil
+}
+func (m *memIndex) All(context.Context) ([]Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Record
+	for _, id := range slices.Sorted(maps.Keys(m.recs)) {
+		out = append(out, m.recs[id])
+	}
+	return out, nil
+}
+func (m *memIndex) ids() []string {
+	all, _ := m.All(context.Background())
+	var out []string
+	for _, r := range all {
+		out = append(out, r.ID)
+	}
+	return out
+}
 
 // fakeFetcher writes a file named <id>.opus into the given dir. If gate is
 // set, it waits for it first (to hold a download "in progress").
@@ -50,23 +106,47 @@ func (f *fakeFetcher) Fetch(ctx context.Context, id, dir string) (ytdlp.Result, 
 	return ytdlp.Result{Path: p, Title: "Title of " + id, Duration: 19 * time.Second}, os.WriteFile(p, []byte(content), 0o644)
 }
 
+// clock is a settable time source.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time      { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func (c *clock) add(d time.Duration) { c.mu.Lock(); c.now = c.now.Add(d); c.mu.Unlock() }
+func newClock() *clock               { return &clock{now: time.Date(2026, 9, 29, 5, 0, 0, 0, time.UTC)} }
+
 func newCache(t *testing.T, f Fetcher, opts ...func(*Options)) (*Cache, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "cache")
-	o := Options{Fetcher: f}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	c, err := New(context.Background(), dir, o)
+	c, err := newCacheIn(t, dir, f, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return c, dir
 }
 
+func newCacheIn(t *testing.T, dir string, f Fetcher, opts ...func(*Options)) (*Cache, error) {
+	t.Helper()
+	o := Options{Fetcher: f, Index: newMemIndex()}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c, err := New(ctx, dir, o)
+	t.Cleanup(func() {
+		cancel()
+		if c != nil {
+			c.Wait()
+		}
+	})
+	return c, err
+}
+
 func TestMissThenHit(t *testing.T) {
 	f := &fakeFetcher{}
-	c, dir := newCache(t, f)
+	idx := newMemIndex()
+	c, dir := newCache(t, f, func(o *Options) { o.Index = idx })
 	ctx := context.Background()
 
 	want := Entry{ID: vid, Path: filepath.Join(dir, vid+".opus"), Title: "Title of " + vid, Duration: 19 * time.Second}
@@ -77,7 +157,7 @@ func TestMissThenHit(t *testing.T) {
 	if data, _ := os.ReadFile(e.Path); string(data) != "audio:"+vid {
 		t.Errorf("content = %q", data)
 	}
-	// The hit reads title and duration back from the sidecar.
+	// The hit reads title and duration back from the index.
 	e2, hit, err := c.Get(ctx, vid)
 	if err != nil || !hit || e2 != want {
 		t.Errorf("second Get = %+v, %v, %v; want %+v", e2, hit, err, want)
@@ -85,16 +165,11 @@ func TestMissThenHit(t *testing.T) {
 	if f.calls.Load() != 1 {
 		t.Errorf("fetches = %d, want 1", f.calls.Load())
 	}
-	assertOnlyAudio(t, dir, vid+".json", vid+".opus")
-}
-
-func TestHitWithoutSidecarHasNoTitle(t *testing.T) {
-	c, dir := newCache(t, &fakeFetcher{})
-	os.WriteFile(filepath.Join(dir, vid+".opus"), []byte("x"), 0o644) // e.g. cached before titles existed
-	e, hit, err := c.Get(context.Background(), vid)
-	if err != nil || !hit || e.Title != "" || e.Duration != 0 || e.Path != c.Path(vid) {
-		t.Errorf("Get = %+v, %v, %v", e, hit, err)
+	r, ok, _ := idx.Get(ctx, vid)
+	if !ok || r.Size != int64(len("audio:"+vid)) || r.Title != "Title of "+vid || r.AddedAt.IsZero() {
+		t.Errorf("index record = %+v, %v", r, ok)
 	}
+	assertFiles(t, dir, vid+".opus")
 }
 
 func TestConcurrentRequestsShareOneDownload(t *testing.T) {
@@ -133,7 +208,6 @@ func TestPartialDownloadNeverVisible(t *testing.T) {
 	go func() { _, _, err := c.Get(context.Background(), vid); result <- err }()
 	scratch := <-f.started
 
-	// Mid-download: the final name must not exist, and the scratch dir is hidden.
 	if c.Has(vid) {
 		t.Fatal("cache reports a hit during download")
 	}
@@ -144,20 +218,24 @@ func TestPartialDownloadNeverVisible(t *testing.T) {
 	if err := <-result; err != nil {
 		t.Fatal(err)
 	}
-	assertOnlyAudio(t, dir, vid+".json", vid+".opus")
+	assertFiles(t, dir, vid+".opus")
 }
 
 func TestFailedDownloadLeavesNothingAndRetries(t *testing.T) {
 	boom := &ytdlp.Error{Kind: ytdlp.KindPrivate, Detail: "private"}
 	f := &fakeFetcher{err: boom}
-	c, dir := newCache(t, f)
+	idx := newMemIndex()
+	c, dir := newCache(t, f, func(o *Options) { o.Index = idx })
 
 	if _, _, err := c.Get(context.Background(), vid); !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
-	assertOnlyAudio(t, dir) // no final file, no scratch dir, no .part junk
+	assertFiles(t, dir) // no final file, no scratch dir, no .part junk
+	if len(idx.ids()) != 0 {
+		t.Errorf("failed download indexed: %v", idx.ids())
+	}
 
-	f.err = nil // e.g. the video became public
+	f.err = nil
 	if _, hit, err := c.Get(context.Background(), vid); err != nil || hit {
 		t.Errorf("retry: hit=%v err=%v (failures must not be cached)", hit, err)
 	}
@@ -168,19 +246,18 @@ func TestFailedDownloadLeavesNothingAndRetries(t *testing.T) {
 
 func TestValidationRejectsBadFile(t *testing.T) {
 	f := &fakeFetcher{content: "not really audio"}
+	idx := newMemIndex()
 	c, dir := newCache(t, f, func(o *Options) {
-		o.Validate = func(path string) error {
-			data, _ := os.ReadFile(path)
-			if string(data) != "good" {
-				return errors.New("bad frames")
-			}
-			return nil
-		}
+		o.Index = idx
+		o.Validate = func(string) error { return errors.New("bad frames") }
 	})
 	if _, _, err := c.Get(context.Background(), vid); err == nil || !strings.Contains(err.Error(), "bad frames") {
 		t.Fatalf("err = %v", err)
 	}
-	assertOnlyAudio(t, dir)
+	assertFiles(t, dir)
+	if len(idx.ids()) != 0 {
+		t.Error("rejected file must not be indexed")
+	}
 }
 
 func TestCallerCancelDoesNotAbortSharedDownload(t *testing.T) {
@@ -211,7 +288,7 @@ func TestCallerCancelDoesNotAbortSharedDownload(t *testing.T) {
 func TestShutdownCancelsDownloads(t *testing.T) {
 	base, cancel := context.WithCancel(context.Background())
 	f := &fakeFetcher{gate: make(chan struct{}), started: make(chan string, 1)}
-	c, err := New(base, filepath.Join(t.TempDir(), "cache"), Options{Fetcher: f})
+	c, err := New(base, filepath.Join(t.TempDir(), "cache"), Options{Fetcher: f, Index: newMemIndex()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,26 +351,113 @@ func TestInvalidIDRejectedBeforeAnyIO(t *testing.T) {
 	}
 }
 
-func TestNewCleansStaleScratchDirs(t *testing.T) {
+func TestStartupReconcile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	os.MkdirAll(filepath.Join(dir, tmpPrefix+vid+"-123"), 0o755)
 	os.WriteFile(filepath.Join(dir, tmpPrefix+vid+"-123", "half.webm"), []byte("x"), 0o644)
-	os.WriteFile(filepath.Join(dir, "keep1234567.opus"), []byte("x"), 0o644)
-	if _, err := New(context.Background(), dir, Options{Fetcher: &fakeFetcher{}}); err != nil {
+	write := func(name string) { os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644) }
+	write("known000000.opus") // indexed: kept
+	write("stray000000.opus") // not indexed: deleted
+	write("stray000000.json") // legacy title file: deleted
+	write("tone.opus")        // not a video name: never touched
+	write("notes.txt")        // not ours: never touched
+	os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
+
+	idx := newMemIndex()
+	idx.Put(context.Background(), Record{ID: "known000000", Size: 1})
+	idx.Put(context.Background(), Record{ID: "gone0000000", Size: 1}) // file missing: dropped
+
+	if _, err := newCacheIn(t, dir, &fakeFetcher{}, func(o *Options) { o.Index = idx }); err != nil {
 		t.Fatal(err)
 	}
-	assertOnlyAudio(t, dir, "keep1234567.opus")
+	assertFiles(t, dir, "known000000.opus", "notes.txt", "subdir", "tone.opus")
+	if got := idx.ids(); !slices.Equal(got, []string{"known000000"}) {
+		t.Errorf("index after reconcile = %v", got)
+	}
 }
 
-func TestSize(t *testing.T) {
-	c, dir := newCache(t, &fakeFetcher{})
-	os.WriteFile(filepath.Join(dir, "aaaaaaaaaaa.opus"), make([]byte, 100), 0o644)
-	os.WriteFile(filepath.Join(dir, "bbbbbbbbbbb.opus"), make([]byte, 50), 0o644)
-	os.WriteFile(filepath.Join(dir, "notes.txt"), make([]byte, 999), 0o644)
-	os.MkdirAll(filepath.Join(dir, tmpPrefix+"x"), 0o755)
-	os.WriteFile(filepath.Join(dir, tmpPrefix+"x", "big.opus"), make([]byte, 999), 0o644)
-	if n, err := c.Size(); err != nil || n != 150 {
-		t.Errorf("Size = %d, %v; want 150", n, err)
+func TestPurgeByAgeUsesLastPlayed(t *testing.T) {
+	clk := newClock()
+	idx := newMemIndex()
+	c, dir := newCache(t, &fakeFetcher{}, func(o *Options) {
+		o.Index, o.Now, o.MaxAge = idx, clk.Now, 12*time.Hour
+	})
+	ctx := context.Background()
+	c.Get(ctx, "aaaaaaaaaaa")
+	c.Get(ctx, "bbbbbbbbbbb")
+
+	clk.add(10 * time.Hour)
+	c.MarkPlayed("bbbbbbbbbbb") // played 10 h after download
+	clk.add(3 * time.Hour)      // a: 13 h since download; b: 3 h since play
+	c.Purge(ctx)
+
+	assertFiles(t, dir, "bbbbbbbbbbb.opus")
+	if got := idx.ids(); !slices.Equal(got, []string{"bbbbbbbbbbb"}) {
+		t.Errorf("index = %v", got)
+	}
+}
+
+func TestPurgeBySizeEvictsLeastRecentlyUsed(t *testing.T) {
+	clk := newClock()
+	f := &fakeFetcher{content: strings.Repeat("x", 100)}
+	c, dir := newCache(t, f, func(o *Options) { o.Now, o.MaxBytes = clk.Now, 250 })
+	ctx := context.Background()
+	for _, id := range []string{"aaaaaaaaaaa", "bbbbbbbbbbb"} {
+		c.Get(ctx, id)
+		clk.add(time.Minute)
+	}
+	c.MarkPlayed("aaaaaaaaaaa") // a is now the most recently used
+	clk.add(time.Minute)
+	c.Get(ctx, "ccccccccccc") // 300 bytes > 250: evict the LRU, which is b
+
+	waitFor(t, func() bool { return !c.Has("bbbbbbbbbbb") })
+	assertFiles(t, dir, "aaaaaaaaaaa.opus", "ccccccccccc.opus")
+	if size, _ := c.Size(ctx); size != 200 {
+		t.Errorf("size = %d, want 200", size)
+	}
+}
+
+func TestPurgeNeverTouchesInUseOrJustDownloaded(t *testing.T) {
+	clk := newClock()
+	inUse := map[string]bool{}
+	var mu sync.Mutex
+	f := &fakeFetcher{content: strings.Repeat("x", 100)}
+	c, dir := newCache(t, f, func(o *Options) {
+		o.Now, o.MaxBytes, o.MaxAge = clk.Now, 150, time.Hour
+		o.InUse = func() map[string]bool { mu.Lock(); defer mu.Unlock(); return maps.Clone(inUse) }
+	})
+	ctx := context.Background()
+	mu.Lock()
+	inUse["aaaaaaaaaaa"] = true // e.g. playing right now
+	mu.Unlock()
+	c.Get(ctx, "aaaaaaaaaaa")
+	clk.add(2 * time.Hour) // a is past MaxAge, but in use
+	c.Get(ctx, "bbbbbbbbbbb")
+	// 200 bytes > 150, a is in use and b was just downloaded: nothing may go.
+	c.Purge(ctx, "bbbbbbbbbbb")
+	assertFiles(t, dir, "aaaaaaaaaaa.opus", "bbbbbbbbbbb.opus")
+
+	mu.Lock()
+	delete(inUse, "aaaaaaaaaaa") // finished playing
+	mu.Unlock()
+	c.Purge(ctx)
+	assertFiles(t, dir, "bbbbbbbbbbb.opus")
+}
+
+func TestPurgeLoopRunsInBackground(t *testing.T) {
+	clk := newClock()
+	c, dir := newCache(t, &fakeFetcher{}, func(o *Options) {
+		o.Now, o.MaxAge, o.PurgeInterval = clk.Now, time.Hour, 10*time.Millisecond
+	})
+	c.Get(context.Background(), "aaaaaaaaaaa")
+	clk.add(2 * time.Hour)
+	waitFor(t, func() bool { return !c.Has("aaaaaaaaaaa") })
+	assertFiles(t, dir)
+}
+
+func TestNewRequiresIndex(t *testing.T) {
+	if _, err := New(context.Background(), t.TempDir(), Options{Fetcher: &fakeFetcher{}}); err == nil {
+		t.Error("New without an Index should fail")
 	}
 }
 
@@ -303,8 +467,19 @@ func (f fetcherFunc) Fetch(ctx context.Context, id, dir string) (ytdlp.Result, e
 	return f(ctx, id, dir)
 }
 
-// assertOnlyAudio checks that dir contains exactly the named files and nothing else.
-func assertOnlyAudio(t *testing.T, dir string, names ...string) {
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertFiles checks that dir contains exactly the named entries and nothing else.
+func assertFiles(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {

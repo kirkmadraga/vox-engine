@@ -77,7 +77,7 @@ func TestPlayQueuesVideo(t *testing.T) {
 		t.Fatalf("queued = %+v", q.queued)
 	}
 	tr := q.queued[0]
-	if tr.URL != "https://youtu.be/jNQXAC9IVRw" || tr.RequestedBy != 5 || tr.VoiceChannel != 77 || tr.TextChannel != 9 {
+	if tr.Key != "jNQXAC9IVRw" || tr.URL != "https://youtu.be/jNQXAC9IVRw" || tr.RequestedBy != 5 || tr.VoiceChannel != 77 || tr.TextChannel != 9 {
 		t.Errorf("track = %+v", tr)
 	}
 	if l, _ := tr.Load(context.Background()); l.Path != "jNQXAC9IVRw" {

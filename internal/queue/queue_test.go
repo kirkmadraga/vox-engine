@@ -434,3 +434,43 @@ func TestOwnLeavesAreNotKicks(t *testing.T) {
 		t.Error("idle guild: Disconnected should be ignored")
 	}
 }
+
+func TestInUseAndOnStart(t *testing.T) {
+	hold := make(chan struct{})
+	h := newHarness(t, hold, 0)
+	started := make(chan string, 4)
+	keyed := func(key string) Track {
+		tr := track(key, 100, func(context.Context) (Loaded, error) {
+			return Loaded{Path: fixture, Title: key, OnStart: func() { started <- key }}, nil
+		})
+		tr.Key = key
+		return tr
+	}
+	h.m.Enqueue(1, keyed("aaaaaaaaaaa"))
+	h.m.Enqueue(1, keyed("bbbbbbbbbbb"))
+	h.m.Enqueue(2, keyed("ccccccccccc")) // another guild, waiting for the voice slot
+	h.rec.waitFor(t, "holding")
+
+	if got := <-started; got != "aaaaaaaaaaa" {
+		t.Errorf("OnStart for %q, want the first track", got)
+	}
+	inUse := h.m.InUse()
+	for _, k := range []string{"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"} {
+		if !inUse[k] {
+			t.Errorf("InUse missing %s: %v", k, inUse)
+		}
+	}
+	h.m.Stop(1)
+	h.m.Stop(2)
+	close(hold)
+	h.rec.waitFor(t, "leave")
+	time.Sleep(20 * time.Millisecond)
+	if n := len(h.m.InUse()); n != 0 {
+		t.Errorf("InUse after stop = %v", h.m.InUse())
+	}
+	select {
+	case k := <-started:
+		t.Errorf("OnStart ran for stopped track %s", k)
+	default:
+	}
+}

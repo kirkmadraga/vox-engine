@@ -35,3 +35,10 @@ func TestValidateFile(t *testing.T) {
 		}
 	}
 }
+
+// The committed test tone (assets/tone.opus) must be playable.
+func TestCommittedTestToneIsValid(t *testing.T) {
+	if err := ValidateFile(filepath.Join("..", "..", "assets", "tone.opus")); err != nil {
+		t.Errorf("assets/tone.opus: %v", err)
+	}
+}

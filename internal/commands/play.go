@@ -49,6 +49,7 @@ func (c Play) Run(ctx context.Context, req Request) error {
 		return reply(ctx, req, "That doesn't look like a YouTube video link.")
 	}
 	return enqueue(ctx, req, c.Voice, c.Queue, queue.Track{
+		Key:  id,
 		URL:  "https://youtu.be/" + id,
 		Load: c.YouTube(id),
 	})

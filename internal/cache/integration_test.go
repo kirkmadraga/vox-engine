@@ -56,7 +56,7 @@ func TestLiveDownloadValidatesAndCaches(t *testing.T) {
 	if hit {
 		t.Error("first Get should be a miss")
 	}
-	assertOnlyAudio(t, dir, liveID+".json", liveID+".opus")
+	assertFiles(t, dir, liveID+".opus")
 
 	if _, hit, err := c.Get(context.Background(), liveID); err != nil || !hit {
 		t.Errorf("second Get: hit=%v err=%v", hit, err)
@@ -72,5 +72,5 @@ func TestLiveDurationLimit(t *testing.T) {
 	if !errors.As(err, &ye) || ye.Kind != ytdlp.KindTooLong {
 		t.Fatalf("err = %v, want KindTooLong", err)
 	}
-	assertOnlyAudio(t, dir)
+	assertFiles(t, dir)
 }

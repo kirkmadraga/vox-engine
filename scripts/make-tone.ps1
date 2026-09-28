@@ -1,9 +1,10 @@
-# Generates the test tone that "@Bot play" uses: 10 s, 440 Hz, Ogg Opus,
+# Generates the test tone that "@Bot test" plays: 10 s, 440 Hz, Ogg Opus,
 # 48 kHz stereo, 20 ms frames (the only frame size the bot accepts).
-# Usage: powershell -ExecutionPolicy Bypass -File scripts\make-tone.ps1 [-Out cache\tone.opus]
+# The tone is committed as assets/tone.opus; only rerun this to change it.
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\make-tone.ps1 [-Out assets\tone.opus]
 # Linux equivalent:
-#   ffmpeg -f lavfi -i sine=frequency=440:duration=10 -ac 2 -ar 48000 -c:a libopus -b:a 96k -frame_duration 20 cache/tone.opus
-param([string]$Out = (Join-Path 'cache' 'tone.opus'))
+#   ffmpeg -f lavfi -i sine=frequency=440:duration=10 -ac 2 -ar 48000 -c:a libopus -b:a 96k -frame_duration 20 assets/tone.opus
+param([string]$Out = (Join-Path 'assets' 'tone.opus'))
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 

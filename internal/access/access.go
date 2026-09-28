@@ -16,8 +16,9 @@ type Checker interface {
 }
 
 // Backend stores the allow-lists. It knows nothing about owners or rules;
-// Policy layers those on top. Implementations: jsonfile (today), and any
-// database later. Every implementation must pass accesstest.BackendContract.
+// Policy layers those on top. Implementations: store.Access (SQLite) in
+// production, accesstest.Memory in tests. Every implementation must pass
+// accesstest.BackendContract.
 //
 // Mutations report changed=false when the state already matched (no-op).
 // Command names arrive lowercased. Implementations must be safe for concurrent use.

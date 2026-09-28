@@ -8,14 +8,20 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultMaxQueueLength is used when max_queue_length is not set.
-const DefaultMaxQueueLength = 10
+// Defaults for optional settings.
+const (
+	DefaultMaxQueueLength = 10
+	DefaultCacheMaxBytes  = 512 << 20 // 512 MiB
+	DefaultCacheMaxAge    = 12 * time.Hour
+	DefaultTestTone       = "assets/tone.opus" // committed with the code
+)
 
 // Config is the validated bot configuration.
 type Config struct {
@@ -23,7 +29,10 @@ type Config struct {
 
 	OwnerIDs           []snowflake.ID
 	CacheDir           string
-	StateFile          string
+	Database           string        // SQLite file: access lists and cache index
+	CacheMaxBytes      int64         // 0 = no size cap
+	CacheMaxAge        time.Duration // since last played; 0 = never expire
+	TestTone           string        // Ogg Opus file played by "test"
 	MaxConcurrentJobs  int
 	MaxQueueLength     int // per server, including the playing track
 	MaxDurationSeconds int
@@ -36,7 +45,10 @@ type Config struct {
 type file struct {
 	OwnerUserIDs       []string `yaml:"owner_user_ids"`
 	CacheDir           string   `yaml:"cache_dir"`
-	StateFile          string   `yaml:"state_file"`
+	Database           string   `yaml:"database"`
+	CacheMaxBytes      *int64   `yaml:"cache_max_bytes"`
+	CacheMaxAge        *string  `yaml:"cache_max_age"`
+	TestTone           string   `yaml:"test_tone"`
 	MaxConcurrentJobs  *int     `yaml:"max_concurrent_jobs"`
 	MaxQueueLength     *int     `yaml:"max_queue_length"`
 	MaxDurationSeconds int      `yaml:"max_duration_seconds"`
@@ -95,7 +107,10 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		Token:              token,
 		OwnerIDs:           owners,
 		CacheDir:           valueOr(f.CacheDir, "cache"),
-		StateFile:          valueOr(f.StateFile, "data/access.json"),
+		Database:           valueOr(f.Database, "data/bot.db"),
+		CacheMaxBytes:      DefaultCacheMaxBytes,
+		CacheMaxAge:        DefaultCacheMaxAge,
+		TestTone:           valueOr(f.TestTone, DefaultTestTone),
 		MaxConcurrentJobs:  1,
 		MaxQueueLength:     DefaultMaxQueueLength,
 		MaxDurationSeconds: f.MaxDurationSeconds,
@@ -114,6 +129,19 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("max_queue_length must be at least 1, got %d", *f.MaxQueueLength)
 		}
 		cfg.MaxQueueLength = *f.MaxQueueLength
+	}
+	if f.CacheMaxBytes != nil {
+		if *f.CacheMaxBytes < 0 {
+			return Config{}, fmt.Errorf("cache_max_bytes must be 0 (no cap) or positive, got %d", *f.CacheMaxBytes)
+		}
+		cfg.CacheMaxBytes = *f.CacheMaxBytes
+	}
+	if f.CacheMaxAge != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.CacheMaxAge))
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("cache_max_age must be a duration like \"12h\" or \"30m\" (0 = never), got %q", *f.CacheMaxAge)
+		}
+		cfg.CacheMaxAge = d
 	}
 	if cfg.MaxDurationSeconds < 0 {
 		return Config{}, fmt.Errorf("max_duration_seconds must be 0 (no limit) or positive, got %d", cfg.MaxDurationSeconds)

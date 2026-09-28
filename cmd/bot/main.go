@@ -22,13 +22,14 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"bot/internal/access"
-	"bot/internal/access/jsonfile"
+
 	audiocache "bot/internal/cache"
 	"bot/internal/commands"
 	"bot/internal/config"
 	"bot/internal/discordio"
 	"bot/internal/queue"
 	"bot/internal/router"
+	"bot/internal/store"
 	"bot/internal/voice"
 	"bot/internal/ytdlp"
 )
@@ -70,15 +71,21 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	logger.Info("config loaded", "owners", len(cfg.OwnerIDs), "max_queue_length", cfg.MaxQueueLength, "disgo", disgo.Version)
 	logger.Debug("debug logging enabled")
 
-	backend, err := jsonfile.Open(cfg.StateFile)
+	// One SQLite database holds the access lists and the audio cache index.
+	db, err := store.Open(cfg.Database)
 	if err != nil {
 		return err
 	}
+	defer db.Close()
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Database), "access.json")); err == nil {
+		logger.Warn("data/access.json is no longer used (access lists now live in the database); re-add servers and grants with allow, then delete the file")
+	}
+
 	inherit := map[string]string{}
 	for _, name := range commands.PlaybackCommands {
 		inherit[name] = "play" // test, queue, skip, stop: whoever may play may use them
 	}
-	policy := access.NewPolicy(backend, access.Options{
+	policy := access.NewPolicy(db.Access(), access.Options{
 		Owners:    cfg.OwnerIDs,
 		Public:    []string{"ping"},
 		OwnerOnly: commands.ManagementCommands,
@@ -86,7 +93,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		Logger:    logger,
 	})
 	if snap, err := policy.Snapshot(ctx); err == nil {
-		logger.Info("access state loaded", "file", cfg.StateFile, "guilds", len(snap.Guilds), "grants", len(snap.Grants))
+		logger.Info("database opened", "file", cfg.Database, "guilds", len(snap.Guilds), "grants", len(snap.Grants))
 	}
 
 	// Downloads: yt-dlp (plus ffmpeg, which yt-dlp calls) into the audio cache.
@@ -100,28 +107,39 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	if downloader.JSRuntime == "" {
 		logger.Warn("ytdlp_js_runtime is not set; YouTube downloads may fail or miss formats")
 	}
+	// The queue is created later (it needs the Discord client); until then nothing is queued.
+	var q *queue.Manager
 	audio, err := audiocache.New(ctx, cfg.CacheDir, audiocache.Options{
 		Fetcher:      downloader,
+		Index:        db.CacheIndex(),
 		Validate:     voice.ValidateFile,
 		MaxDownloads: cfg.MaxConcurrentJobs,
-		Logger:       logger,
+		MaxBytes:     cfg.CacheMaxBytes,
+		MaxAge:       cfg.CacheMaxAge,
+		InUse: func() map[string]bool {
+			if q == nil {
+				return nil
+			}
+			return q.InUse()
+		},
+		Logger: logger,
 	})
 	if err != nil {
 		return err
 	}
-	if size, err := audio.Size(); err == nil {
-		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size)
+	if size, err := audio.Size(ctx); err == nil {
+		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size, "max_bytes", cfg.CacheMaxBytes, "max_age", cfg.CacheMaxAge)
 	}
 	youtube := func(id string) queue.LoadFunc {
 		return func(ctx context.Context) (queue.Loaded, error) {
 			e, _, err := audio.Get(ctx, id)
-			return queue.Loaded{Path: e.Path, Title: e.Title, Duration: e.Duration}, err
+			return queue.Loaded{Path: e.Path, Title: e.Title, Duration: e.Duration, OnStart: func() { audio.MarkPlayed(id) }}, err
 		}
 	}
-	tonePath := filepath.Join(cfg.CacheDir, "tone.opus")
+	tonePath := cfg.TestTone
 	tone := func(context.Context) (queue.Loaded, error) {
 		if _, err := os.Stat(tonePath); err != nil {
-			return queue.Loaded{}, fmt.Errorf("test tone (generate it with scripts/make-tone.ps1): %w", err)
+			return queue.Loaded{}, fmt.Errorf("test tone (set test_tone in config.yaml): %w", err)
 		}
 		return queue.Loaded{Path: tonePath, Title: "Test tone"}, nil
 	}
@@ -146,7 +164,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	logger.Info("voice: DAVE enabled via dave-go")
 
 	// Playback is bound to ctx: on shutdown it stops and leaves voice.
-	q := queue.New(ctx, queue.Options{
+	q = queue.New(ctx, queue.Options{
 		Connector: discordio.VoiceConnector{Manager: client.VoiceManager, DAVE: dave},
 		Notifier:  discordio.ChannelNotifier{Sender: client.Rest, Logger: logger},
 		Logger:    logger,
@@ -186,7 +204,8 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 
 	<-ctx.Done()
 	logger.Info("shutting down")
-	q.Wait() // ctx is cancelled, so playback stops, voice is left, and downloads end
+	q.Wait()     // ctx is cancelled, so playback stops, voice is left, and downloads end
+	audio.Wait() // and the cache's purge loop stops
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client.Close(closeCtx)

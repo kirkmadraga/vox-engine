@@ -30,3 +30,4 @@ config.yaml
 
 # Small committed test fixtures
 !/internal/voice/testdata/*.opus
+!/assets/*.opus
