@@ -10,8 +10,11 @@ cache_dir: ./cache
 state_file: ./data/access.json
 max_concurrent_jobs: 1
 max_duration_seconds: 0     # 0 = no limit
+max_queue_length: 10        # tracks per server, including the one playing
 
 # Optional overrides; otherwise found on PATH.
 # ytdlp_path: ""
 # ffmpeg_path: ""
-# ytdlp_js_runtime: ""      # e.g. "node", "deno", "quickjs"; passed as --js-runtimes
+# JS runtime yt-dlp uses for YouTube, passed as --js-runtimes. quickjs runs on any x86-64 CPU
+# (Debian 13: apt install quickjs); node or deno are faster where the CPU supports them.
+ytdlp_js_runtime: quickjs

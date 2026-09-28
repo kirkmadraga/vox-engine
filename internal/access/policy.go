@@ -14,6 +14,7 @@ import (
 var (
 	ErrOwnerOnly = errors.New("command is owner-only and cannot be granted")
 	ErrPublic    = errors.New("command is already open to everyone in allowed guilds")
+	ErrInherited = errors.New("command shares another command's access and cannot be granted on its own")
 )
 
 // Options configures a Policy.
@@ -21,8 +22,11 @@ type Options struct {
 	Owners    []snowflake.ID
 	Public    []string // commands anyone may run in allowed guilds
 	OwnerOnly []string // commands that can never be granted
-	Now       func() time.Time
-	Logger    *slog.Logger
+	// Inherit maps a command to the command whose access it shares, e.g.
+	// "skip" -> "play": whoever may run play may run skip.
+	Inherit map[string]string
+	Now     func() time.Time
+	Logger  *slog.Logger
 }
 
 // Policy applies the access rules on top of a Backend:
@@ -31,11 +35,14 @@ type Options struct {
 //   - Anyone else needs the guild to be allowed, and then either a public command
 //     or a personal grant for it. Grants are global per user.
 //   - Owner-only commands are never allowed for non-owners and cannot be granted.
+//   - Inheriting commands (e.g. skip -> play) are checked as their parent and
+//     cannot be granted themselves.
 type Policy struct {
 	backend   Backend
 	owners    map[snowflake.ID]struct{}
 	public    map[string]struct{}
 	ownerOnly map[string]struct{}
+	inherit   map[string]string
 	now       func() time.Time
 	logger    *slog.Logger
 }
@@ -47,11 +54,15 @@ func NewPolicy(backend Backend, opts Options) *Policy {
 		owners:    make(map[snowflake.ID]struct{}, len(opts.Owners)),
 		public:    lowerSet(opts.Public),
 		ownerOnly: lowerSet(opts.OwnerOnly),
+		inherit:   make(map[string]string, len(opts.Inherit)),
 		now:       opts.Now,
 		logger:    opts.Logger,
 	}
 	for _, id := range opts.Owners {
 		p.owners[id] = struct{}{}
+	}
+	for child, parent := range opts.Inherit {
+		p.inherit[strings.ToLower(child)] = strings.ToLower(parent)
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -88,6 +99,12 @@ func (p *Policy) IsOwnerOnly(command string) bool {
 	return ok
 }
 
+// InheritsFrom returns the command whose access command shares, if any.
+func (p *Policy) InheritsFrom(command string) (string, bool) {
+	parent, ok := p.inherit[strings.ToLower(command)]
+	return parent, ok
+}
+
 // Allowed implements Checker. Backend errors deny (and are logged): failing
 // closed is safer than answering strangers.
 func (p *Policy) Allowed(ctx context.Context, userID, guildID snowflake.ID, command string) bool {
@@ -95,6 +112,9 @@ func (p *Policy) Allowed(ctx context.Context, userID, guildID snowflake.ID, comm
 		return true
 	}
 	command = strings.ToLower(command)
+	if parent, ok := p.inherit[command]; ok {
+		command = parent
+	}
 	if p.IsOwnerOnly(command) {
 		return false
 	}
@@ -142,6 +162,9 @@ func (p *Policy) Grant(ctx context.Context, userID snowflake.ID, command string,
 		return false, ErrOwnerOnly
 	case p.IsPublic(command):
 		return false, ErrPublic
+	}
+	if _, ok := p.inherit[command]; ok {
+		return false, ErrInherited
 	}
 	changed, err := p.backend.Grant(ctx, userID, command, p.entry(by))
 	return changed, p.logChange(changed, err, "grant", "user", userID, "command", command, "by", by)

@@ -25,6 +25,7 @@ owner_user_ids:
   - "222222222222222222"
 cache_dir: ./audio
 max_concurrent_jobs: 2
+max_queue_length: 25
 `
 	cfg, err := Parse([]byte(yaml), env("tok"))
 	if err != nil {
@@ -34,7 +35,7 @@ max_concurrent_jobs: 2
 	if len(cfg.OwnerIDs) != 2 || cfg.OwnerIDs[0] != want[0] || cfg.OwnerIDs[1] != want[1] {
 		t.Errorf("OwnerIDs = %v, want %v", cfg.OwnerIDs, want)
 	}
-	if cfg.Token != "tok" || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 {
+	if cfg.Token != "tok" || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 {
 		t.Errorf("unexpected cfg: %+v", cfg)
 	}
 	if cfg.StateFile != "data/access.json" {
@@ -57,7 +58,7 @@ func TestParseOwnerListsEmptyOrMissing(t *testing.T) {
 			if len(cfg.OwnerIDs) != 0 {
 				t.Errorf("OwnerIDs = %v, want empty", cfg.OwnerIDs)
 			}
-			if cfg.MaxConcurrentJobs != 1 || cfg.CacheDir != "cache" {
+			if cfg.MaxConcurrentJobs != 1 || cfg.CacheDir != "cache" || cfg.MaxQueueLength != DefaultMaxQueueLength {
 				t.Errorf("defaults not applied: %+v", cfg)
 			}
 		})
@@ -85,6 +86,7 @@ func TestParseErrors(t *testing.T) {
 		"zero id":           {"owner_user_ids: [\"0\"]\n", "tok", "owner_user_ids[0]"},
 		"unknown key":       {"owner_ids: []\n", "tok", "owner_ids"},
 		"bad jobs":          {"max_concurrent_jobs: 0\n", "tok", "max_concurrent_jobs"},
+		"bad queue length":  {"max_queue_length: 0\n", "tok", "max_queue_length"},
 		"negative duration": {"max_duration_seconds: -5\n", "tok", "max_duration_seconds"},
 		"invalid yaml":      {"owner_user_ids: [\n", "tok", "parse config"},
 	}

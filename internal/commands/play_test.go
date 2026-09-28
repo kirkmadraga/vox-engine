@@ -3,16 +3,13 @@ package commands
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io/fs"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/voice"
+	"bot/internal/queue"
 )
 
 type fakeLocator map[snowflake.ID]snowflake.ID // user -> voice channel
@@ -22,138 +19,158 @@ func (f fakeLocator) UserVoiceChannel(_, user snowflake.ID) (snowflake.ID, bool)
 	return ch, ok
 }
 
-type fakePlayer struct {
-	startErr error
-	doneErr  error // passed to done, asynchronously
-	started  []string
+type fakeQueue struct {
+	pos      queue.Position
+	err      error
+	queued   []queue.Track
+	listing  queue.Listing
+	skipped  *queue.Track
+	stopped  bool
+	guildArg snowflake.ID
 }
 
-func (f *fakePlayer) Start(g, ch snowflake.ID, path string, done func(error)) error {
-	if f.startErr != nil {
-		return f.startErr
+func (f *fakeQueue) Enqueue(g snowflake.ID, t queue.Track) (queue.Position, error) {
+	f.guildArg = g
+	if f.err != nil {
+		return queue.Position{}, f.err
 	}
-	f.started = append(f.started, fmt.Sprintf("%d/%d %s", g, ch, path))
-	go done(f.doneErr)
-	return nil
+	f.queued = append(f.queued, t)
+	return f.pos, nil
 }
-
-// syncReplier collects replies from both the command and the background callback.
-type syncReplier struct {
-	mu  sync.Mutex
-	got []Reply
-	ch  chan struct{}
-}
-
-func newSyncReplier() *syncReplier { return &syncReplier{ch: make(chan struct{}, 10)} }
-
-func (s *syncReplier) Reply(_ context.Context, r Reply) error {
-	s.mu.Lock()
-	s.got = append(s.got, r)
-	s.mu.Unlock()
-	s.ch <- struct{}{}
-	return nil
-}
-
-// wait returns once n replies have arrived.
-func (s *syncReplier) wait(t *testing.T, n int) []Reply {
-	t.Helper()
-	for range n {
-		select {
-		case <-s.ch:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for reply")
-		}
+func (f *fakeQueue) Skip(snowflake.ID) (queue.Track, bool) {
+	if f.skipped == nil {
+		return queue.Track{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]Reply(nil), s.got...)
+	return *f.skipped, true
+}
+func (f *fakeQueue) Stop(snowflake.ID) bool          { return f.stopped }
+func (f *fakeQueue) List(snowflake.ID) queue.Listing { return f.listing }
+
+func loaderFor(id string) queue.LoadFunc {
+	return func(context.Context) (queue.Loaded, error) { return queue.Loaded{Path: id}, nil }
 }
 
-func runPlay(t *testing.T, p Play, author snowflake.ID, args string) *syncReplier {
+// runCmd runs cmd as user 5 (in voice channel 77) in guild 1, text channel 9.
+func runCmd(t *testing.T, cmd Command, args string) Reply {
 	t.Helper()
-	rep := newSyncReplier()
-	if err := p.Run(context.Background(), Request{GuildID: 1, AuthorID: author, Args: args, Reply: rep}); err != nil {
+	rep := &fakeReplier{}
+	if err := cmd.Run(context.Background(), Request{GuildID: 1, ChannelID: 9, AuthorID: 5, Args: args, Reply: rep}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	return rep
+	if len(rep.got) != 1 {
+		t.Fatalf("got %d replies, want 1", len(rep.got))
+	}
+	if len(rep.got[0].Mentions) != 0 {
+		t.Errorf("playback replies must not ping: %v", rep.got[0].Mentions)
+	}
+	return rep.got[0]
 }
 
-func TestPlayStartsToneInCallersChannel(t *testing.T) {
-	player := &fakePlayer{}
-	p := Play{Voice: fakeLocator{5: 77}, Player: player, TonePath: "cache/tone.opus"}
-	got := runPlay(t, p, 5, "").wait(t, 1)
-	if got[0].Content != "Playing the test tone in <#77>." {
-		t.Errorf("reply = %q", got[0].Content)
+func TestPlayQueuesVideo(t *testing.T) {
+	q := &fakeQueue{}
+	p := Play{Voice: fakeLocator{5: 77}, Queue: q, YouTube: loaderFor}
+	r := runCmd(t, p, "https://www.youtube.com/watch?v=jNQXAC9IVRw&t=5")
+	if r.Content != "Getting <https://youtu.be/jNQXAC9IVRw> ready…" {
+		t.Errorf("reply = %q", r.Content)
 	}
-	if len(player.started) != 1 || player.started[0] != "1/77 cache/tone.opus" {
-		t.Errorf("started = %v", player.started)
+	if len(q.queued) != 1 || q.guildArg != 1 {
+		t.Fatalf("queued = %+v", q.queued)
+	}
+	tr := q.queued[0]
+	if tr.URL != "https://youtu.be/jNQXAC9IVRw" || tr.RequestedBy != 5 || tr.VoiceChannel != 77 || tr.TextChannel != 9 {
+		t.Errorf("track = %+v", tr)
+	}
+	if l, _ := tr.Load(context.Background()); l.Path != "jNQXAC9IVRw" {
+		t.Errorf("track loads %q, want the parsed video id", l.Path)
 	}
 }
 
-func TestPlayRefusals(t *testing.T) {
+func TestPlayReplies(t *testing.T) {
 	cases := []struct {
-		name   string
-		player *fakePlayer
-		author snowflake.ID
-		args   string
-		want   string
+		name string
+		q    *fakeQueue
+		args string
+		want string
 	}{
-		{"not in voice", &fakePlayer{}, 6, "", "Join a voice channel first"},
-		{"url not yet", &fakePlayer{}, 5, "https://youtu.be/x", "Only the test tone works for now"},
-		{"busy", &fakePlayer{startErr: voice.ErrBusy}, 5, "", "already playing"},
-		{"missing tone", &fakePlayer{startErr: fmt.Errorf("open: %w", fs.ErrNotExist)}, 5, "", "test tone file is missing"},
-		{"other start error", &fakePlayer{startErr: errors.New("bad ogg")}, 5, "", "Couldn't start playback"},
+		{"no link", &fakeQueue{}, "", "Usage: `play <YouTube link>`"},
+		{"not youtube", &fakeQueue{}, "https://vimeo.com/1", "That doesn't look like a YouTube video link."},
+		{"playlist", &fakeQueue{}, "https://www.youtube.com/playlist?list=PLx", "Playlists aren't supported"},
+		{"queued behind", &fakeQueue{pos: queue.Position{Ahead: 2}}, "youtu.be/jNQXAC9IVRw", "Queued <https://youtu.be/jNQXAC9IVRw> (2 ahead of it)."},
+		{"other server", &fakeQueue{pos: queue.Position{OtherGuild: true}}, "youtu.be/jNQXAC9IVRw", "playing in another server"},
+		{"full", &fakeQueue{err: queue.ErrFull}, "youtu.be/jNQXAC9IVRw", "The queue is full."},
+		{"other error", &fakeQueue{err: errors.New("shutting down")}, "youtu.be/jNQXAC9IVRw", "Couldn't queue that"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := Play{Voice: fakeLocator{5: 77}, Player: c.player, TonePath: "t.opus"}
-			got := runPlay(t, p, c.author, c.args).wait(t, 1)
-			if !strings.Contains(got[0].Content, c.want) {
-				t.Errorf("reply = %q, want containing %q", got[0].Content, c.want)
-			}
-			if len(got[0].Mentions) != 0 {
-				t.Error("play replies must not ping")
-			}
-			if c.name == "not in voice" || c.name == "url not yet" {
-				if len(c.player.started) != 0 {
-					t.Error("player must not start")
-				}
+			r := runCmd(t, Play{Voice: fakeLocator{5: 77}, Queue: c.q, YouTube: loaderFor}, c.args)
+			if !strings.Contains(r.Content, c.want) {
+				t.Errorf("reply = %q, want containing %q", r.Content, c.want)
 			}
 		})
 	}
 }
 
-func TestPlayReportsBackgroundFailure(t *testing.T) {
-	for name, tc := range map[string]struct {
-		err  error
-		want string
-	}{
-		"dave":    {fmt.Errorf("x: %w", voice.ErrNotReady), "encryption (DAVE)"},
-		"generic": {errors.New("udp closed"), "Playback failed"},
+func TestPlayAndTestNeedVoice(t *testing.T) {
+	q := &fakeQueue{}
+	for _, cmd := range []Command{
+		Play{Voice: fakeLocator{}, Queue: q, YouTube: loaderFor},
+		Test{Voice: fakeLocator{}, Queue: q, Tone: loaderFor("tone")},
 	} {
-		t.Run(name, func(t *testing.T) {
-			p := Play{Voice: fakeLocator{5: 77}, Player: &fakePlayer{doneErr: tc.err}, TonePath: "t.opus"}
-			got := runPlay(t, p, 5, "").wait(t, 2)
-			var found bool
-			for _, r := range got {
-				found = found || strings.Contains(r.Content, tc.want)
-			}
-			if !found {
-				t.Errorf("replies %+v missing %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestPlayQuietOnSuccessOrShutdown(t *testing.T) {
-	for _, doneErr := range []error{nil, context.Canceled} {
-		p := Play{Voice: fakeLocator{5: 77}, Player: &fakePlayer{doneErr: doneErr}, TonePath: "t.opus"}
-		rep := runPlay(t, p, 5, "")
-		rep.wait(t, 1) // "Playing..."
-		select {
-		case <-rep.ch:
-			t.Errorf("done(%v): unexpected extra reply %+v", doneErr, rep.got)
-		case <-time.After(100 * time.Millisecond):
+		if r := runCmd(t, cmd, "youtu.be/jNQXAC9IVRw"); !strings.Contains(r.Content, "Join a voice channel first") {
+			t.Errorf("%s: reply = %q", cmd.Name(), r.Content)
 		}
 	}
+	if len(q.queued) != 0 {
+		t.Error("nothing should be queued when the caller is not in voice")
+	}
 }
+
+func TestTestQueuesTone(t *testing.T) {
+	q := &fakeQueue{}
+	r := runCmd(t, Test{Voice: fakeLocator{5: 77}, Queue: q, Tone: loaderFor("tone.opus")}, "")
+	if r.Content != "Getting **Test tone** ready…" {
+		t.Errorf("reply = %q", r.Content)
+	}
+	if len(q.queued) != 1 || q.queued[0].Title != "Test tone" || q.queued[0].VoiceChannel != 77 {
+		t.Errorf("queued = %+v", q.queued)
+	}
+}
+
+func TestQueueList(t *testing.T) {
+	if r := runCmd(t, QueueList{Queue: &fakeQueue{}}, ""); r.Content != "The queue is empty." {
+		t.Errorf("empty: %q", r.Content)
+	}
+	q := &fakeQueue{listing: queue.Listing{
+		Current: &queue.Track{Title: "Me at the zoo", Duration: 19 * time.Second, RequestedBy: 5},
+		Upcoming: []queue.Track{
+			{URL: "https://youtu.be/abcdefghijk", RequestedBy: 6},
+			{Title: "Song_2", Duration: 2*time.Minute + 1*time.Second, RequestedBy: 5},
+		},
+	}}
+	want := "**Now playing:** **Me at the zoo** (0:19), requested by <@5>\n" +
+		"**Up next:**\n" +
+		"1. <https://youtu.be/abcdefghijk>, requested by <@6>\n" +
+		"2. **Song\\_2** (2:01), requested by <@5>"
+	if r := runCmd(t, QueueList{Queue: q}, ""); r.Content != want {
+		t.Errorf("listing:\n%s\nwant:\n%s", r.Content, want)
+	}
+}
+
+func TestSkipAndStop(t *testing.T) {
+	if r := runCmd(t, Skip{Queue: &fakeQueue{}}, ""); r.Content != "Nothing is playing." {
+		t.Errorf("skip idle: %q", r.Content)
+	}
+	q := &fakeQueue{skipped: &queue.Track{Title: "Me at the zoo"}, stopped: true}
+	if r := runCmd(t, Skip{Queue: q}, ""); r.Content != "Skipped **Me at the zoo**." {
+		t.Errorf("skip: %q", r.Content)
+	}
+	if r := runCmd(t, Stop{Queue: &fakeQueue{}}, ""); r.Content != "Nothing is playing." {
+		t.Errorf("stop idle: %q", r.Content)
+	}
+	if r := runCmd(t, Stop{Queue: q}, ""); r.Content != "Stopped and cleared the queue." {
+		t.Errorf("stop: %q", r.Content)
+	}
+}
+
+// The real queue satisfies the interface the commands use.
+var _ Queue = (*queue.Manager)(nil)

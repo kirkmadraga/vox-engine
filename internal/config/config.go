@@ -14,6 +14,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultMaxQueueLength is used when max_queue_length is not set.
+const DefaultMaxQueueLength = 10
+
 // Config is the validated bot configuration.
 type Config struct {
 	Token string // from DISCORD_TOKEN
@@ -22,6 +25,7 @@ type Config struct {
 	CacheDir           string
 	StateFile          string
 	MaxConcurrentJobs  int
+	MaxQueueLength     int // per server, including the playing track
 	MaxDurationSeconds int
 	YtdlpPath          string
 	FfmpegPath         string
@@ -34,6 +38,7 @@ type file struct {
 	CacheDir           string   `yaml:"cache_dir"`
 	StateFile          string   `yaml:"state_file"`
 	MaxConcurrentJobs  *int     `yaml:"max_concurrent_jobs"`
+	MaxQueueLength     *int     `yaml:"max_queue_length"`
 	MaxDurationSeconds int      `yaml:"max_duration_seconds"`
 	YtdlpPath          string   `yaml:"ytdlp_path"`
 	FfmpegPath         string   `yaml:"ffmpeg_path"`
@@ -92,6 +97,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		CacheDir:           valueOr(f.CacheDir, "cache"),
 		StateFile:          valueOr(f.StateFile, "data/access.json"),
 		MaxConcurrentJobs:  1,
+		MaxQueueLength:     DefaultMaxQueueLength,
 		MaxDurationSeconds: f.MaxDurationSeconds,
 		YtdlpPath:          f.YtdlpPath,
 		FfmpegPath:         f.FfmpegPath,
@@ -102,6 +108,12 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("max_concurrent_jobs must be at least 1, got %d", *f.MaxConcurrentJobs)
 		}
 		cfg.MaxConcurrentJobs = *f.MaxConcurrentJobs
+	}
+	if f.MaxQueueLength != nil {
+		if *f.MaxQueueLength < 1 {
+			return Config{}, fmt.Errorf("max_queue_length must be at least 1, got %d", *f.MaxQueueLength)
+		}
+		cfg.MaxQueueLength = *f.MaxQueueLength
 	}
 	if cfg.MaxDurationSeconds < 0 {
 		return Config{}, fmt.Errorf("max_duration_seconds must be 0 (no limit) or positive, got %d", cfg.MaxDurationSeconds)

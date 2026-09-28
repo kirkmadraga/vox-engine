@@ -24,6 +24,7 @@ const maxMessageLen = 2000
 // AccessManager is what the management commands need. access.Policy implements it.
 type AccessManager interface {
 	IsOwner(userID snowflake.ID) bool
+	InheritsFrom(command string) (parent string, ok bool)
 	GuildAllowed(ctx context.Context, guildID snowflake.ID) (bool, error)
 	AllowGuild(ctx context.Context, guildID, by snowflake.ID) (bool, error)
 	DenyGuild(ctx context.Context, guildID, by snowflake.ID) (bool, error)
@@ -136,6 +137,9 @@ func (c Allow) Run(ctx context.Context, req Request) error {
 		return reply(ctx, req, "`%s` is owner-only and can't be granted.", t.command)
 	case errors.Is(err, access.ErrPublic):
 		return reply(ctx, req, "`%s` is already open to everyone in allowed servers.", t.command)
+	case errors.Is(err, access.ErrInherited):
+		parent, _ := c.Access.InheritsFrom(t.command)
+		return reply(ctx, req, "`%s` comes with `%s` access. Grant `%s` instead.", t.command, parent, parent)
 	case err != nil:
 		return reply(ctx, req, saveFailed)
 	case !changed:

@@ -3,6 +3,7 @@ package discordio
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
@@ -60,4 +61,33 @@ func (c ChannelReplier) Reply(ctx context.Context, r commands.Reply) error {
 		})
 	_, err := c.Sender.CreateMessage(c.ChannelID, msg, rest.WithCtx(ctx))
 	return err
+}
+
+// notifyTimeout bounds one status message.
+const notifyTimeout = 10 * time.Second
+
+// ChannelNotifier posts status messages (e.g. "Now playing") that ping no one.
+// It implements queue.Notifier.
+type ChannelNotifier struct {
+	Sender MessageSender
+	Logger *slog.Logger
+}
+
+func (n ChannelNotifier) Notify(channelID snowflake.ID, content string) {
+	ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+	defer cancel()
+	if err := (ChannelReplier{Sender: n.Sender, ChannelID: channelID}).Reply(ctx, commands.Reply{Content: content}); err != nil && n.Logger != nil {
+		n.Logger.Error("status message failed", "channel", channelID, "err", err)
+	}
+}
+
+// BotVoiceLeaveHandler returns a disgo listener that calls onLeave when the bot
+// itself leaves a voice channel, whether it left on its own or was removed.
+// (The queue tells the two apart.)
+func BotVoiceLeaveHandler(selfID func() snowflake.ID, onLeave func(guildID snowflake.ID)) func(*events.GuildVoiceLeave) {
+	return func(e *events.GuildVoiceLeave) {
+		if self := selfID(); self != 0 && e.VoiceState.UserID == self {
+			onLeave(e.VoiceState.GuildID)
+		}
+	}
 }

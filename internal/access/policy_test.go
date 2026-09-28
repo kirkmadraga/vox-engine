@@ -187,3 +187,48 @@ func TestGuildDenyRevokesPublicAccess(t *testing.T) {
 		t.Error("grant should work again after re-allowing the guild")
 	}
 }
+
+func TestInheritedCommandsShareParentAccess(t *testing.T) {
+	ctx := context.Background()
+	p := access.NewPolicy(accesstest.NewMemory(), access.Options{
+		Owners:    []snowflake.ID{owner},
+		Public:    []string{"ping"},
+		OwnerOnly: []string{"allow"},
+		Inherit:   map[string]string{"Skip": "play", "stop": "PLAY", "echo": "ping", "sneaky": "allow"},
+	})
+	p.AllowGuild(ctx, guildA, owner)
+	p.Grant(ctx, friend, "play", owner)
+
+	cases := []struct {
+		name    string
+		user    snowflake.ID
+		guild   snowflake.ID
+		command string
+		want    bool
+	}{
+		{"granted parent, child allowed", friend, guildA, "skip", true},
+		{"child case-insensitive", friend, guildA, "STOP", true},
+		{"no parent grant, child denied", other, guildA, "skip", false},
+		{"child still needs allowed guild", friend, guildB, "skip", false},
+		{"child of public is public", other, guildA, "echo", true},
+		{"child of owner-only stays owner-only", friend, guildA, "sneaky", false},
+		{"owner always", owner, guildB, "skip", true},
+	}
+	for _, c := range cases {
+		if got := p.Allowed(ctx, c.user, c.guild, c.command); got != c.want {
+			t.Errorf("%s: Allowed(%d, %d, %q) = %v, want %v", c.name, c.user, c.guild, c.command, got, c.want)
+		}
+	}
+
+	if _, err := p.Grant(ctx, other, "skip", owner); !errors.Is(err, access.ErrInherited) {
+		t.Errorf("granting an inheriting command: err = %v, want ErrInherited", err)
+	}
+	if parent, ok := p.InheritsFrom("SKIP"); !ok || parent != "play" {
+		t.Errorf("InheritsFrom(SKIP) = %q, %v", parent, ok)
+	}
+	// Revoking the parent removes the child too.
+	p.Revoke(ctx, friend, "play", owner)
+	if p.Allowed(ctx, friend, guildA, "skip") {
+		t.Error("child still allowed after parent revoked")
+	}
+}

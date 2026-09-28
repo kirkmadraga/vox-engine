@@ -14,6 +14,9 @@ $go = (Get-Command go -ErrorAction Stop).Source
 
 $env:CGO_ENABLED = '0'
 Step 'go vet' { & $go vet ./... }
+# Integration tests need the network, so they only run on demand, but they must keep compiling:
+#   go test -tags integration ./internal/cache/
+Step 'go vet (integration)' { & $go vet -tags integration ./... }
 
 # The race detector needs cgo and a C compiler. It only affects tests, never the shipped binary.
 $gcc = Get-Command gcc -ErrorAction SilentlyContinue

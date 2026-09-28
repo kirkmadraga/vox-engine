@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
@@ -54,5 +55,32 @@ func TestChannelReplierNoMentions(t *testing.T) {
 	body, _ := json.Marshal(s.msg.AllowedMentions)
 	if !strings.Contains(string(body), `"users":[]`) {
 		t.Errorf("allowed_mentions = %s, want empty users array", body)
+	}
+}
+
+func TestChannelNotifierPingsNoOne(t *testing.T) {
+	s := &fakeSender{}
+	ChannelNotifier{Sender: s}.Notify(77, "Now playing: **x**, requested by <@5>. @everyone")
+	if s.calls != 1 || s.channel != 77 {
+		t.Fatalf("calls=%d channel=%d", s.calls, s.channel)
+	}
+	body, _ := json.Marshal(s.msg.AllowedMentions)
+	if string(body) != `{"parse":[],"roles":[],"users":[],"replied_user":false}` {
+		t.Errorf("allowed_mentions = %s", body)
+	}
+}
+
+func TestBotVoiceLeaveHandlerOnlyForSelf(t *testing.T) {
+	var got []snowflake.ID
+	h := BotVoiceLeaveHandler(func() snowflake.ID { return 1000 }, func(g snowflake.ID) { got = append(got, g) })
+	leave := func(user, guild snowflake.ID) *events.GuildVoiceLeave {
+		return &events.GuildVoiceLeave{GenericGuildVoiceState: &events.GenericGuildVoiceState{
+			VoiceState: discord.VoiceState{UserID: user, GuildID: guild},
+		}}
+	}
+	h(leave(5, 1))    // someone else left
+	h(leave(1000, 2)) // the bot left
+	if len(got) != 1 || got[0] != 2 {
+		t.Errorf("onLeave calls = %v, want [2]", got)
 	}
 }

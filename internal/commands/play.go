@@ -3,79 +3,144 @@ package commands
 import (
 	"context"
 	"errors"
-	"io/fs"
-	"log/slog"
-	"time"
+	"fmt"
+	"strings"
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/voice"
+	"bot/internal/queue"
+	"bot/internal/ytdlp"
 )
+
+// PlaybackCommands share play's access (see access.Options.Inherit).
+var PlaybackCommands = []string{"test", "queue", "skip", "stop"}
 
 // VoiceLocator finds which voice channel a user is in.
 type VoiceLocator interface {
 	UserVoiceChannel(guildID, userID snowflake.ID) (snowflake.ID, bool)
 }
 
-// AudioPlayer starts background playback of a local Ogg Opus file.
-// voice.Player implements it.
-type AudioPlayer interface {
-	Start(guildID, channelID snowflake.ID, path string, done func(error)) error
+// Queue is the per-guild playback queue. queue.Manager implements it.
+type Queue interface {
+	Enqueue(guildID snowflake.ID, t queue.Track) (queue.Position, error)
+	Skip(guildID snowflake.ID) (queue.Track, bool)
+	Stop(guildID snowflake.ID) bool
+	List(guildID snowflake.ID) queue.Listing
 }
 
-// statusTimeout bounds the reply sent after background playback ends.
-const statusTimeout = 10 * time.Second
-
-// Play is "@Bot play". For now it plays a local test tone (V3 of the voice
-// plan); YouTube links come later.
+// Play is "@Bot play <YouTube link>".
 type Play struct {
-	Voice    VoiceLocator
-	Player   AudioPlayer
-	TonePath string
-	Logger   *slog.Logger
+	Voice   VoiceLocator
+	Queue   Queue
+	YouTube func(videoID string) queue.LoadFunc // loads a video through the cache
 }
 
 func (Play) Name() string { return "play" }
 
 func (c Play) Run(ctx context.Context, req Request) error {
-	if req.Args != "" {
-		return reply(ctx, req, "Only the test tone works for now: send `play` with nothing after it. YouTube links are coming next.")
+	if req.Args == "" {
+		return reply(ctx, req, "Usage: `play <YouTube link>`")
 	}
-	channelID, ok := c.Voice.UserVoiceChannel(req.GuildID, req.AuthorID)
+	id, err := ytdlp.ParseVideoID(req.Args)
+	switch {
+	case errors.Is(err, ytdlp.ErrPlaylist):
+		return reply(ctx, req, "Playlists aren't supported, only single videos.")
+	case err != nil:
+		return reply(ctx, req, "That doesn't look like a YouTube video link.")
+	}
+	return enqueue(ctx, req, c.Voice, c.Queue, queue.Track{
+		URL:  "https://youtu.be/" + id,
+		Load: c.YouTube(id),
+	})
+}
+
+// Test is "@Bot test": queues the local test tone.
+type Test struct {
+	Voice VoiceLocator
+	Queue Queue
+	Tone  queue.LoadFunc
+}
+
+func (Test) Name() string { return "test" }
+
+func (c Test) Run(ctx context.Context, req Request) error {
+	return enqueue(ctx, req, c.Voice, c.Queue, queue.Track{Title: "Test tone", Load: c.Tone})
+}
+
+// enqueue adds t for the requester, who must be in a voice channel.
+func enqueue(ctx context.Context, req Request, v VoiceLocator, q Queue, t queue.Track) error {
+	channelID, ok := v.UserVoiceChannel(req.GuildID, req.AuthorID)
 	if !ok {
 		return reply(ctx, req, "Join a voice channel first, then try again.")
 	}
+	t.RequestedBy, t.VoiceChannel, t.TextChannel = req.AuthorID, channelID, req.ChannelID
 
-	err := c.Player.Start(req.GuildID, channelID, c.TonePath, func(err error) {
-		// Playback ended long after this command returned, so use a fresh context.
-		if err == nil || errors.Is(err, context.Canceled) {
-			return // finished, or the bot is shutting down
-		}
-		c.logger().Error("playback failed", "guild", req.GuildID, "channel", channelID, "err", err)
-		msg := "Playback failed, so I left the channel. Details are in the bot's log."
-		if errors.Is(err, voice.ErrNotReady) {
-			msg = "Voice encryption (DAVE) didn't finish setting up, so I left the channel. Try again in a moment."
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
-		defer cancel()
-		_ = reply(ctx, req, "%s", msg)
-	})
+	pos, err := q.Enqueue(req.GuildID, t)
 	switch {
-	case errors.Is(err, voice.ErrBusy):
-		return reply(ctx, req, "I'm already playing something. Try again when it finishes.")
-	case errors.Is(err, fs.ErrNotExist):
-		c.logger().Error("test tone missing", "path", c.TonePath)
-		return reply(ctx, req, "The test tone file is missing on the bot's machine (see the log for the path).")
+	case errors.Is(err, queue.ErrFull):
+		return reply(ctx, req, "The queue is full. Try again once a few tracks have played.")
 	case err != nil:
-		c.logger().Error("playback could not start", "path", c.TonePath, "err", err)
-		return reply(ctx, req, "Couldn't start playback. Details are in the bot's log.")
+		return reply(ctx, req, "Couldn't queue that right now. Details are in the bot's log.")
+	case pos.Ahead == 0 && pos.OtherGuild:
+		return reply(ctx, req, "Queued. I'm playing in another server right now and will start when that finishes.")
+	case pos.Ahead == 0:
+		return reply(ctx, req, "Getting %s ready…", t.Name())
 	}
-	return reply(ctx, req, "Playing the test tone in <#%s>.", channelID)
+	return reply(ctx, req, "Queued %s (%d ahead of it).", t.Name(), pos.Ahead)
 }
 
-func (c Play) logger() *slog.Logger {
-	if c.Logger == nil {
-		return slog.New(slog.DiscardHandler)
+// QueueList is "@Bot queue".
+type QueueList struct{ Queue Queue }
+
+func (QueueList) Name() string { return "queue" }
+
+func (c QueueList) Run(ctx context.Context, req Request) error {
+	l := c.Queue.List(req.GuildID)
+	if l.Current == nil && len(l.Upcoming) == 0 {
+		return reply(ctx, req, "The queue is empty.")
 	}
-	return c.Logger
+	var b strings.Builder
+	if l.Current != nil {
+		fmt.Fprintf(&b, "**Now playing:** %s\n", describe(*l.Current))
+	}
+	if len(l.Upcoming) > 0 {
+		b.WriteString("**Up next:**\n")
+		for i, t := range l.Upcoming {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, describe(t))
+		}
+	}
+	return reply(ctx, req, "%s", truncate(strings.TrimRight(b.String(), "\n"), maxMessageLen))
+}
+
+func describe(t queue.Track) string {
+	s := t.Name()
+	if t.Duration > 0 {
+		s += " (" + queue.FormatDuration(t.Duration) + ")"
+	}
+	return s + ", requested by " + Mention(t.RequestedBy)
+}
+
+// Skip is "@Bot skip".
+type Skip struct{ Queue Queue }
+
+func (Skip) Name() string { return "skip" }
+
+func (c Skip) Run(ctx context.Context, req Request) error {
+	t, ok := c.Queue.Skip(req.GuildID)
+	if !ok {
+		return reply(ctx, req, "Nothing is playing.")
+	}
+	return reply(ctx, req, "Skipped %s.", t.Name())
+}
+
+// Stop is "@Bot stop".
+type Stop struct{ Queue Queue }
+
+func (Stop) Name() string { return "stop" }
+
+func (c Stop) Run(ctx context.Context, req Request) error {
+	if !c.Queue.Stop(req.GuildID) {
+		return reply(ctx, req, "Nothing is playing.")
+	}
+	return reply(ctx, req, "Stopped and cleared the queue.")
 }

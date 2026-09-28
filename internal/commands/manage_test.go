@@ -234,3 +234,12 @@ func TestTruncate(t *testing.T) {
 		t.Error("short strings must be unchanged")
 	}
 }
+
+func TestAllowInheritedCommand(t *testing.T) {
+	p := access.NewPolicy(accesstest.NewMemory(), access.Options{
+		Owners:  []snowflake.ID{ownerID},
+		Inherit: map[string]string{"skip": "play"},
+	})
+	a := Allow{Access: p, Known: func(string) bool { return true }}
+	contains(t, run(t, a, "<@2> skip"), "`skip` comes with `play` access. Grant `play` instead.")
+}
