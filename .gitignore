@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Runtime state and audio cache
+/data/
+/cache/
+
+# Local config (commit config.example.yaml instead)
+config.yaml
+
+# Build output
+/bot
+/bot.exe
+/bot.new
+/bot.prev
+/spike
+/spike.exe
+/dist/
+
+# Test audio fixtures generated locally
+*.opus
+*.ogg
+
+# Go test/coverage output
+*.test
+*.out
+
+# Local planning doc (kept up to date, not committed)
+/SPEC.md

@@ -1,0 +1,17 @@
+# Copy to config.yaml and edit. Restart the bot to apply changes.
+
+# Owners: always allowed everywhere, can run every command, including access management.
+# Not editable at runtime. IDs are quoted strings.
+owner_user_ids:
+  - "111111111111111111"   # main
+  - "222222222222222222"   # alt
+
+cache_dir: ./cache
+state_file: ./data/access.json
+max_concurrent_jobs: 1
+max_duration_seconds: 0     # 0 = no limit
+
+# Optional overrides; otherwise found on PATH.
+# ytdlp_path: ""
+# ffmpeg_path: ""
+# ytdlp_js_runtime: ""      # e.g. "node", "deno", "quickjs"; passed as --js-runtimes
