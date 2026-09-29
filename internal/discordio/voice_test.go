@@ -2,10 +2,16 @@ package discordio
 
 import (
 	"log/slog"
+	"math/rand/v2"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
+	disgovoice "github.com/disgoorg/disgo/voice"
+	"github.com/disgoorg/godave"
 	"github.com/disgoorg/snowflake/v2"
 )
 
@@ -51,4 +57,36 @@ func TestDAVEHandsEachSessionOutOnce(t *testing.T) {
 		t.Error("a session must be handed out only once")
 	}
 	got.Close()
+}
+
+// Servers joining at the same time each get the DAVE session created for their
+// own connection, never another's.
+func TestDAVEConcurrentJoinsKeepTheirSessions(t *testing.T) {
+	d := &DAVE{}
+	create := d.CreateFunc()
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var made godave.Session
+			_, got := d.createConn(func() disgovoice.Conn {
+				// Like disgo's CreateConn: some work, then the session is created, then more work.
+				time.Sleep(time.Duration(rand.IntN(3)) * time.Millisecond)
+				made = create(slog.New(slog.DiscardHandler), godave.UserID(strconv.Itoa(i)), noCallbacks{})
+				time.Sleep(time.Duration(rand.IntN(3)) * time.Millisecond)
+				return nil
+			})
+			if got == nil || any(got) != any(made) {
+				t.Errorf("join %d got another connection's DAVE session", i)
+			}
+			if got != nil {
+				got.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	if d.take() != nil {
+		t.Error("no session may be left pending")
+	}
 }

@@ -40,7 +40,17 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "path to config.yaml")
 	envPath := flag.String("env", ".env", "path to .env (optional; environment variables take precedence)")
 	debug := flag.Bool("debug", false, "log why messages are ignored (never logs message content)")
+	checkConfig := flag.Bool("check-config", false, "load .env and config.yaml, report whether they're valid, and exit")
 	flag.Parse()
+
+	if *checkConfig {
+		if _, err := loadConfig(*configPath, *envPath); err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("config OK")
+		return
+	}
 
 	level := slog.LevelInfo
 	if *debug {
@@ -61,16 +71,23 @@ func main() {
 	}
 }
 
+// loadConfig loads .env (into the environment) and config.yaml, as startup does.
+func loadConfig(configPath, envPath string) (config.Config, error) {
+	if err := config.LoadDotEnv(envPath); err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(configPath, os.Getenv)
+}
+
 // run holds all startup and shutdown logic so it can return errors instead of exiting.
 func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPath string) error {
-	if err := config.LoadDotEnv(envPath); err != nil {
-		return err
-	}
-	cfg, err := config.Load(configPath, os.Getenv)
+	cfg, err := loadConfig(configPath, envPath)
 	if err != nil {
 		return err
 	}
-	logger.Info("config loaded", "owners", len(cfg.OwnerIDs), "max_queue_length", cfg.MaxQueueLength, "disgo", disgo.Version)
+	logger.Info("config loaded", "owners", len(cfg.OwnerIDs), "max_queue_length", cfg.MaxQueueLength,
+		"max_voice_sessions", cfg.MaxVoiceSessions, "voice_idle_timeout", cfg.VoiceIdleTimeout,
+		"max_concurrent_searches", cfg.MaxConcurrentSearches, "disgo", disgo.Version)
 	logger.Debug("debug logging enabled")
 
 	// One SQLite database holds the access lists and the audio cache index.
@@ -109,10 +126,11 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		Logger:         logger,
 	}
 	searcher := &ytdlp.Searcher{
-		Runner:    downloader.Runner,
-		Path:      downloader.Path,
-		JSRuntime: downloader.JSRuntime,
-		Cookies:   downloader.Cookies,
+		MaxConcurrent: cfg.MaxConcurrentSearches,
+		Runner:        downloader.Runner,
+		Path:          downloader.Path,
+		JSRuntime:     downloader.JSRuntime,
+		Cookies:       downloader.Cookies,
 	}
 	if downloader.JSRuntime == "" {
 		logger.Warn("ytdlp_js_runtime is not set; YouTube downloads may fail or miss formats")
@@ -186,10 +204,12 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 
 	// Playback is bound to ctx: on shutdown it stops and leaves voice.
 	q = queue.New(ctx, queue.Options{
-		Connector: discordio.VoiceConnector{Manager: client.VoiceManager, DAVE: dave},
-		Notifier:  discordio.ChannelNotifier{Sender: client.Rest, Logger: logger},
-		Logger:    logger,
-		MaxLength: cfg.MaxQueueLength,
+		Connector:   discordio.VoiceConnector{Manager: client.VoiceManager, DAVE: dave},
+		Notifier:    discordio.ChannelNotifier{Sender: client.Rest, Logger: logger},
+		Logger:      logger,
+		MaxLength:   cfg.MaxQueueLength,
+		MaxSessions: cfg.MaxVoiceSessions,
+		IdleTimeout: cfg.VoiceIdleTimeout,
 	})
 	voiceStates := discordio.VoiceStates{Caches: client.Caches}
 

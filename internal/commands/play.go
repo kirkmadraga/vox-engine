@@ -148,7 +148,7 @@ func enqueue(ctx context.Context, req Request, v VoiceLocator, q Queue, t queue.
 	case err != nil:
 		return reply(ctx, req, "Couldn't queue that right now. Details are in the bot's log.")
 	case pos.Ahead == 0 && pos.OtherGuild:
-		return reply(ctx, req, "Queued. I'm playing in another server right now and will start when that finishes.")
+		return reply(ctx, req, "Queued. I'm busy playing in other servers right now and will start as soon as I'm free.")
 	case pos.Ahead == 0:
 		return reply(ctx, req, "Getting %s ready…", t.Name())
 	}

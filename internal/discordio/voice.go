@@ -23,12 +23,24 @@ var ErrNoDAVE = errors.New("no DAVE session for voice connection (DAVE not wired
 // the connection that created it. disgo never closes DAVE sessions itself, so
 // the connection does it on leave.
 //
-// This relies on the bot holding one voice connection at a time: disgo
-// creates the session synchronously inside VoiceManager.CreateConn, and
-// Connect takes it right after.
+// disgo creates the session synchronously inside VoiceManager.CreateConn
+// (NewConn calls the session create func), so the session to take is the one
+// the hook saw during that call. createConn runs CreateConn and the take under
+// one lock, so servers joining at the same time can't swap sessions.
 type DAVE struct {
+	connectMu sync.Mutex // one CreateConn+take at a time
+
 	mu      sync.Mutex
 	pending *session.Session
+}
+
+// createConn calls create and returns the connection with the DAVE session
+// created during that call.
+func (d *DAVE) createConn(create func() disgovoice.Conn) (disgovoice.Conn, *session.Session) {
+	d.connectMu.Lock()
+	defer d.connectMu.Unlock()
+	conn := create()
+	return conn, d.take()
 }
 
 // CreateFunc is passed to voice.WithDaveSessionCreateFunc.
@@ -55,8 +67,7 @@ type VoiceConnector struct {
 }
 
 func (c VoiceConnector) Connect(ctx context.Context, guildID, channelID snowflake.ID) (voice.Connection, error) {
-	conn := c.Manager.CreateConn(guildID)
-	sess := c.DAVE.take()
+	conn, sess := c.DAVE.createConn(func() disgovoice.Conn { return c.Manager.CreateConn(guildID) })
 	vc := &voiceConn{conn: conn, dave: sess}
 	if sess == nil {
 		vc.Close(ctx)

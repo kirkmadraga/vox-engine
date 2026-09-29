@@ -5,19 +5,25 @@
 # REPLACE these examples with real IDs (Discord: Developer Mode on, right-click
 # your name, Copy User ID). The bot refuses to start while they're unchanged.
 owner_user_ids:
-  - "111111111111111111"   # main
-  - "222222222222222222"   # alt
+  - "111111111111111111"      # main
+  - "222222222222222222"      # alt
 
 cache_dir: ./cache
 database: ./data/bot.db       # SQLite: access lists and the audio cache index
 cache_max_bytes: 536870912    # 512 MB total audio; least recently played goes first (0 = no cap)
 cache_max_age: 12h            # delete audio not played for this long (0 = never)
-max_concurrent_jobs: 1
-max_duration_seconds: 0     # 0 = no limit
-max_queue_length: 10        # tracks per server, including the one playing
-search_results: 10          # results listed by "@Bot play <search words>" (1-10)
-ytdlp_min_interval: 30s     # at least this long between YouTube downloads (0 = none)
-test_tone: ./assets/tone.opus  # played by "@Bot test"; committed with the code
+max_duration_seconds: 0       # 0 = no limit
+max_queue_length: 10          # tracks per server, including the one playing
+search_results: 10            # results listed by "@Bot play <search words>" (1-10)
+max_voice_sessions: 1         # servers the bot plays in at the same time
+voice_idle_timeout: 0         # stay in voice this long after the queue ends, e.g. 2m (0 = leave at once)
+
+# How hard the bot leans on YouTube. Raising these makes a busy bot faster but
+# makes YouTube more likely to block it (or the cookies' account, if used).
+max_concurrent_jobs: 1        # downloads at the same time
+max_concurrent_searches: 1    # searches at the same time
+ytdlp_min_interval: 30s       # at least this long between YouTube downloads (0 = none)
+test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 
 # Optional overrides; otherwise found on PATH.
 # ytdlp_path: ""

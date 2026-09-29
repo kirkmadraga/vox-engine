@@ -35,16 +35,26 @@ type Hit struct {
 }
 
 // Searcher finds YouTube videos for some words using yt-dlp. It only lists
-// results (no download). Searches run one at a time. Use it by pointer.
+// results (no download). At most MaxConcurrent searches run at once. Use it by
+// pointer.
 type Searcher struct {
-	Runner    Runner
-	Path      string        // yt-dlp executable
-	JSRuntime string        // optional: passed as --js-runtimes
-	Cookies   string        // optional: Netscape cookies.txt; each search gets a private copy, never saved back
-	Timeout   time.Duration // 0 = DefaultSearchTimeout
-	Lock      sync.Locker   // optional: guards Cookies while it's copied; share with Downloader.Lock
+	Runner        Runner
+	Path          string        // yt-dlp executable
+	JSRuntime     string        // optional: passed as --js-runtimes
+	Cookies       string        // optional: Netscape cookies.txt; each search gets a private copy, never saved back
+	Timeout       time.Duration // 0 = DefaultSearchTimeout
+	Lock          sync.Locker   // optional: guards Cookies while it's copied; share with Downloader.Lock
+	MaxConcurrent int           // searches at the same time; <1 = 1
 
-	mu sync.Mutex // searches run one at a time
+	once sync.Once
+	sem  chan struct{} // one token per running search
+}
+
+// acquire waits for a free search slot; the returned func releases it.
+func (s *Searcher) acquire() func() {
+	s.once.Do(func() { s.sem = make(chan struct{}, max(s.MaxConcurrent, 1)) })
+	s.sem <- struct{}{}
+	return func() { <-s.sem }
 }
 
 // searchFields are printed for every result, as one JSON object per line.
@@ -118,8 +128,7 @@ func (s *Searcher) search(ctx context.Context, query string, n int, args func(co
 	if cleanQuery(query) == "" {
 		return nil, ErrNoResults
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.acquire()()
 	var cookies string // this search's private copy, thrown away afterwards
 	if s.Cookies != "" {
 		c, err := checkoutCookies(s.Cookies, s.Lock)

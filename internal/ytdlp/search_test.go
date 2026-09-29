@@ -219,6 +219,55 @@ func (c *countingRunner) Run(context.Context, string, []string) ([]byte, []byte,
 	return []byte(zooLine), nil, nil
 }
 
+// gateRunner holds every run until release is closed, counting how many run at once.
+type gateRunner struct {
+	countingRunner
+	release chan struct{}
+}
+
+func (g *gateRunner) Run(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+	g.mu.Lock()
+	g.running++
+	g.peak = max(g.peak, g.running)
+	g.mu.Unlock()
+	<-g.release
+	g.mu.Lock()
+	g.running--
+	g.mu.Unlock()
+	return []byte(zooLine), nil, nil
+}
+
+func (g *gateRunner) now() int { g.mu.Lock(); defer g.mu.Unlock(); return g.running }
+
+func TestMaxConcurrentSearches(t *testing.T) {
+	for _, limit := range []int{0, 1, 3} {
+		r := &gateRunner{release: make(chan struct{})}
+		s := &Searcher{Runner: r, MaxConcurrent: limit}
+		var wg sync.WaitGroup
+		for range 6 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.SearchN(context.Background(), "q", 1)
+			}()
+		}
+		want := max(limit, 1)
+		deadline := time.Now().Add(5 * time.Second)
+		for r.now() < want && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(20 * time.Millisecond) // give any extra search the chance to (wrongly) start
+		if got := r.now(); got != want {
+			t.Errorf("limit %d: %d searches running, want %d", limit, got, want)
+		}
+		close(r.release)
+		wg.Wait()
+		if r.peak != want {
+			t.Errorf("limit %d: peak %d, want %d", limit, r.peak, want)
+		}
+	}
+}
+
 func TestSearchesRunOneAtATime(t *testing.T) {
 	r := &countingRunner{}
 	s := &Searcher{Runner: r}

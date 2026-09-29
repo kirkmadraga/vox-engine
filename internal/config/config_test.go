@@ -249,3 +249,32 @@ func TestExampleOwnerIDsRejected(t *testing.T) {
 		t.Error("second example ID should be rejected too")
 	}
 }
+
+func TestParseVoiceAndSearchLimits(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxVoiceSessions != 1 || cfg.VoiceIdleTimeout != 0 || cfg.MaxConcurrentSearches != 1 {
+		t.Errorf("defaults: sessions=%d idle=%v searches=%d", cfg.MaxVoiceSessions, cfg.VoiceIdleTimeout, cfg.MaxConcurrentSearches)
+	}
+	cfg, err = Parse([]byte("max_voice_sessions: 4\nvoice_idle_timeout: 30s\nmax_concurrent_searches: 3\n"), env(fakeToken))
+	if err != nil || cfg.MaxVoiceSessions != 4 || cfg.VoiceIdleTimeout != 30*time.Second || cfg.MaxConcurrentSearches != 3 {
+		t.Errorf("custom: %+v, %v", cfg, err)
+	}
+	cfg, err = Parse([]byte("voice_idle_timeout: \"0\"\n"), env(fakeToken))
+	if err != nil || cfg.VoiceIdleTimeout != 0 {
+		t.Errorf("idle 0: %v, %v", cfg.VoiceIdleTimeout, err)
+	}
+	for yaml, want := range map[string]string{
+		"max_voice_sessions: 0\n":      "max_voice_sessions",
+		"max_voice_sessions: -2\n":     "max_voice_sessions",
+		"max_concurrent_searches: 0\n": "max_concurrent_searches",
+		"voice_idle_timeout: -1m\n":    "voice_idle_timeout",
+		"voice_idle_timeout: soon\n":   "voice_idle_timeout",
+	} {
+		if _, err := Parse([]byte(yaml), env(fakeToken)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want mention of %s", yaml, err, want)
+		}
+	}
+}

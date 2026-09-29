@@ -25,46 +25,53 @@ const (
 	DefaultYtdlpMinInterval = 30 * time.Second
 	DefaultSearchResults    = 10
 	MaxSearchResults        = 10 // keeps the list within one Discord message
+	DefaultVoiceIdleTimeout = 0 // leave as soon as the queue ends
 )
 
 // Config is the validated bot configuration.
 type Config struct {
 	Token string // from DISCORD_TOKEN
 
-	OwnerIDs           []snowflake.ID
-	CacheDir           string
-	Database           string        // SQLite file: access lists and cache index
-	CacheMaxBytes      int64         // 0 = no size cap
-	CacheMaxAge        time.Duration // since last played; 0 = never expire
-	TestTone           string        // Ogg Opus file played by "test"
-	MaxConcurrentJobs  int
-	MaxQueueLength     int // per server, including the playing track
-	SearchResults      int // how many results "play <search words>" lists
-	MaxDurationSeconds int
-	YtdlpPath          string
-	FfmpegPath         string
-	YtdlpJSRuntime     string
-	YtdlpCookies       string        // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
-	YtdlpMinInterval   time.Duration // minimum time between yt-dlp runs; 0 = none
+	OwnerIDs              []snowflake.ID
+	CacheDir              string
+	Database              string        // SQLite file: access lists and cache index
+	CacheMaxBytes         int64         // 0 = no size cap
+	CacheMaxAge           time.Duration // since last played; 0 = never expire
+	TestTone              string        // Ogg Opus file played by "test"
+	MaxConcurrentJobs     int
+	MaxQueueLength        int           // per server, including the playing track
+	SearchResults         int           // how many results "play <search words>" lists
+	MaxVoiceSessions      int           // servers in voice at the same time
+	VoiceIdleTimeout      time.Duration // how long to stay in voice after the queue ends; 0 = leave at once
+	MaxConcurrentSearches int           // yt-dlp searches at the same time
+	MaxDurationSeconds    int
+	YtdlpPath             string
+	FfmpegPath            string
+	YtdlpJSRuntime        string
+	YtdlpCookies          string        // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
+	YtdlpMinInterval      time.Duration // minimum time between yt-dlp runs; 0 = none
 }
 
 // file mirrors config.yaml. IDs stay strings here and are parsed to snowflakes after decoding.
 type file struct {
-	OwnerUserIDs       []string `yaml:"owner_user_ids"`
-	CacheDir           string   `yaml:"cache_dir"`
-	Database           string   `yaml:"database"`
-	CacheMaxBytes      *int64   `yaml:"cache_max_bytes"`
-	CacheMaxAge        *string  `yaml:"cache_max_age"`
-	TestTone           string   `yaml:"test_tone"`
-	MaxConcurrentJobs  *int     `yaml:"max_concurrent_jobs"`
-	MaxQueueLength     *int     `yaml:"max_queue_length"`
-	SearchResults      *int     `yaml:"search_results"`
-	MaxDurationSeconds int      `yaml:"max_duration_seconds"`
-	YtdlpPath          string   `yaml:"ytdlp_path"`
-	FfmpegPath         string   `yaml:"ffmpeg_path"`
-	YtdlpJSRuntime     string   `yaml:"ytdlp_js_runtime"`
-	YtdlpCookies       string   `yaml:"ytdlp_cookies"`
-	YtdlpMinInterval   *string  `yaml:"ytdlp_min_interval"`
+	OwnerUserIDs          []string `yaml:"owner_user_ids"`
+	CacheDir              string   `yaml:"cache_dir"`
+	Database              string   `yaml:"database"`
+	CacheMaxBytes         *int64   `yaml:"cache_max_bytes"`
+	CacheMaxAge           *string  `yaml:"cache_max_age"`
+	TestTone              string   `yaml:"test_tone"`
+	MaxConcurrentJobs     *int     `yaml:"max_concurrent_jobs"`
+	MaxQueueLength        *int     `yaml:"max_queue_length"`
+	SearchResults         *int     `yaml:"search_results"`
+	MaxVoiceSessions      *int     `yaml:"max_voice_sessions"`
+	VoiceIdleTimeout      *string  `yaml:"voice_idle_timeout"`
+	MaxConcurrentSearches *int     `yaml:"max_concurrent_searches"`
+	MaxDurationSeconds    int      `yaml:"max_duration_seconds"`
+	YtdlpPath             string   `yaml:"ytdlp_path"`
+	FfmpegPath            string   `yaml:"ffmpeg_path"`
+	YtdlpJSRuntime        string   `yaml:"ytdlp_js_runtime"`
+	YtdlpCookies          string   `yaml:"ytdlp_cookies"`
+	YtdlpMinInterval      *string  `yaml:"ytdlp_min_interval"`
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from path into the process environment.
@@ -121,22 +128,25 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 	}
 
 	cfg := Config{
-		Token:              token,
-		OwnerIDs:           owners,
-		CacheDir:           valueOr(f.CacheDir, "cache"),
-		Database:           valueOr(f.Database, "data/bot.db"),
-		CacheMaxBytes:      DefaultCacheMaxBytes,
-		CacheMaxAge:        DefaultCacheMaxAge,
-		TestTone:           valueOr(f.TestTone, DefaultTestTone),
-		MaxConcurrentJobs:  1,
-		MaxQueueLength:     DefaultMaxQueueLength,
-		SearchResults:      DefaultSearchResults,
-		MaxDurationSeconds: f.MaxDurationSeconds,
-		YtdlpPath:          f.YtdlpPath,
-		FfmpegPath:         f.FfmpegPath,
-		YtdlpJSRuntime:     f.YtdlpJSRuntime,
-		YtdlpCookies:       strings.TrimSpace(f.YtdlpCookies),
-		YtdlpMinInterval:   DefaultYtdlpMinInterval,
+		Token:                 token,
+		OwnerIDs:              owners,
+		CacheDir:              valueOr(f.CacheDir, "cache"),
+		Database:              valueOr(f.Database, "data/bot.db"),
+		CacheMaxBytes:         DefaultCacheMaxBytes,
+		CacheMaxAge:           DefaultCacheMaxAge,
+		TestTone:              valueOr(f.TestTone, DefaultTestTone),
+		MaxConcurrentJobs:     1,
+		MaxQueueLength:        DefaultMaxQueueLength,
+		SearchResults:         DefaultSearchResults,
+		MaxVoiceSessions:      1,
+		VoiceIdleTimeout:      DefaultVoiceIdleTimeout,
+		MaxConcurrentSearches: 1,
+		MaxDurationSeconds:    f.MaxDurationSeconds,
+		YtdlpPath:             f.YtdlpPath,
+		FfmpegPath:            f.FfmpegPath,
+		YtdlpJSRuntime:        f.YtdlpJSRuntime,
+		YtdlpCookies:          strings.TrimSpace(f.YtdlpCookies),
+		YtdlpMinInterval:      DefaultYtdlpMinInterval,
 	}
 	if f.MaxConcurrentJobs != nil {
 		if *f.MaxConcurrentJobs < 1 {
@@ -155,6 +165,25 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("search_results must be 1 to %d, got %d", MaxSearchResults, n)
 		}
 		cfg.SearchResults = *f.SearchResults
+	}
+	if f.MaxVoiceSessions != nil {
+		if *f.MaxVoiceSessions < 1 {
+			return Config{}, fmt.Errorf("max_voice_sessions must be at least 1, got %d", *f.MaxVoiceSessions)
+		}
+		cfg.MaxVoiceSessions = *f.MaxVoiceSessions
+	}
+	if f.MaxConcurrentSearches != nil {
+		if *f.MaxConcurrentSearches < 1 {
+			return Config{}, fmt.Errorf("max_concurrent_searches must be at least 1, got %d", *f.MaxConcurrentSearches)
+		}
+		cfg.MaxConcurrentSearches = *f.MaxConcurrentSearches
+	}
+	if f.VoiceIdleTimeout != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.VoiceIdleTimeout))
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("voice_idle_timeout must be a duration like \"2m\" or \"30s\" (0 = leave at once), got %q", *f.VoiceIdleTimeout)
+		}
+		cfg.VoiceIdleTimeout = d
 	}
 	if f.CacheMaxBytes != nil {
 		if *f.CacheMaxBytes < 0 {

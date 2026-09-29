@@ -448,8 +448,8 @@ func TestInUseAndOnStart(t *testing.T) {
 	}
 	h.m.Enqueue(1, keyed("aaaaaaaaaaa"))
 	h.m.Enqueue(1, keyed("bbbbbbbbbbb"))
+	h.rec.waitFor(t, "holding")          // guild 1 has the voice slot
 	h.m.Enqueue(2, keyed("ccccccccccc")) // another guild, waiting for the voice slot
-	h.rec.waitFor(t, "holding")
 
 	if got := <-started; got != "aaaaaaaaaaa" {
 		t.Errorf("OnStart for %q, want the first track", got)

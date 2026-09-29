@@ -62,7 +62,7 @@ type Notifier interface {
 // Position describes where a newly queued track landed.
 type Position struct {
 	Ahead      int  // tracks before it, including the one playing
-	OtherGuild bool // another server is using the voice connection; this queue will wait
+	OtherGuild bool // every voice slot is busy playing in other servers; this queue will wait
 }
 
 // Listing is a snapshot of a guild's queue.
@@ -78,6 +78,14 @@ type Options struct {
 	Notifier  Notifier
 	Logger    *slog.Logger
 	MaxLength int // per guild, including the playing track; <1 means 10
+	// MaxSessions is how many guilds can be in voice at the same time; <1 means 1.
+	MaxSessions int
+	// IdleTimeout is how long to stay in voice after a guild's queue runs out,
+	// so a new request plays without rejoining; 0 leaves at once. An idle guild
+	// leaves early when another guild is waiting for a voice slot.
+	IdleTimeout time.Duration
+	// After is the idle timer; nil means time.After. Tests replace it.
+	After func(time.Duration) <-chan time.Time
 }
 
 // Manager owns all guild queues.
@@ -88,12 +96,15 @@ type Manager struct {
 	notifier  Notifier
 	logger    *slog.Logger
 	maxLen    int
-	slot      chan struct{} // the single voice connection
+	slot      chan struct{} // one token per guild in voice
+	idle      time.Duration
+	after     func(time.Duration) <-chan time.Time
 
-	mu     sync.Mutex
-	guilds map[snowflake.ID]*guildQueue
-	active snowflake.ID // guild holding the slot, 0 if none
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	guilds  map[snowflake.ID]*guildQueue
+	active  map[snowflake.ID]bool // guilds holding a voice slot
+	waiting int                   // workers waiting for a voice slot
+	wg      sync.WaitGroup
 }
 
 type guildQueue struct {
@@ -104,7 +115,18 @@ type guildQueue struct {
 	// It is cleared before the bot leaves on its own, so a later "left voice"
 	// event can be told apart from being disconnected by someone else.
 	connected bool
-	kicked    bool // disconnected by someone else; the queue was discarded
+	kicked    bool          // disconnected by someone else; the queue was discarded
+	idle      bool          // in voice with an empty queue, waiting (see Options.IdleTimeout)
+	leaveNow  bool          // stop was asked for: don't stay idle, leave when the queue ends
+	wake      chan struct{} // nudges an idle worker (new track, stop, kick, a guild waiting for a slot)
+}
+
+// nudge wakes g's worker if it is idle. Caller holds m.mu.
+func (g *guildQueue) nudge() {
+	select {
+	case g.wake <- struct{}{}:
+	default:
+	}
 }
 
 type item struct {
@@ -124,8 +146,14 @@ func New(base context.Context, opts Options) *Manager {
 		notifier:  opts.Notifier,
 		logger:    opts.Logger,
 		maxLen:    opts.MaxLength,
-		slot:      make(chan struct{}, 1),
+		slot:      make(chan struct{}, max(opts.MaxSessions, 1)),
+		idle:      max(opts.IdleTimeout, 0),
+		after:     opts.After,
 		guilds:    map[snowflake.ID]*guildQueue{},
+		active:    map[snowflake.ID]bool{},
+	}
+	if m.after == nil {
+		m.after = time.After
 	}
 	if m.maxLen < 1 {
 		m.maxLen = 10
@@ -145,7 +173,7 @@ func (m *Manager) Wait() { m.wg.Wait() }
 func (m *Manager) guild(id snowflake.ID) *guildQueue {
 	g, ok := m.guilds[id]
 	if !ok {
-		g = &guildQueue{}
+		g = &guildQueue{wake: make(chan struct{}, 1)}
 		m.guilds[id] = g
 	}
 	return g
@@ -168,7 +196,9 @@ func (m *Manager) Enqueue(guildID snowflake.ID, t Track) (Position, error) {
 	}
 	it := &item{Track: t, done: make(chan struct{})}
 	g.pending = append(g.pending, it)
-	pos := Position{Ahead: ahead, OtherGuild: m.active != 0 && m.active != guildID}
+	g.leaveNow = false // a new request cancels an earlier stop
+	g.nudge()
+	pos := Position{Ahead: ahead, OtherGuild: !m.active[guildID] && m.busyOthers(guildID) >= cap(m.slot)}
 	if !g.running {
 		g.running = true
 		m.wg.Add(1)
@@ -179,6 +209,18 @@ func (m *Manager) Enqueue(guildID snowflake.ID, t Track) (Position, error) {
 
 	go m.load(guildID, it)
 	return pos, nil
+}
+
+// busyOthers counts other guilds holding a voice slot that aren't idle (idle
+// ones give their slot up to a waiting guild). Caller holds m.mu.
+func (m *Manager) busyOthers(guildID snowflake.ID) int {
+	n := 0
+	for id := range m.active {
+		if id != guildID && !m.guilds[id].idle {
+			n++
+		}
+	}
+	return n
 }
 
 // load runs a track's LoadFunc. A track that fails while still waiting in the
@@ -250,22 +292,21 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 	defer m.wg.Done()
 	s := &session{m: m, g: g, guildID: guildID, log: m.logger.With("guild", guildID)}
 
-	select {
-	case m.slot <- struct{}{}: // wait while another guild is in voice
-	case <-m.base.Done():
+	if !m.acquireSlot() {
 		m.mu.Lock()
 		g.running, g.pending = false, nil
 		m.mu.Unlock()
 		return
 	}
 	m.mu.Lock()
-	m.active = guildID
+	m.active[guildID] = true
 	m.mu.Unlock()
 	defer func() {
 		s.leave()
 		<-m.slot
 	}()
 
+	idled := false // already stayed idle since the last track; next empty queue means leave
 	for {
 		m.mu.Lock()
 		if g.kicked {
@@ -275,16 +316,21 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 			s.leave()
 			m.mu.Lock()
 		}
+		if len(g.pending) == 0 && !idled && s.canIdle() {
+			m.mu.Unlock()
+			s.idleWait()
+			idled = true
+			continue
+		}
 		if len(g.pending) == 0 || m.base.Err() != nil {
 			// Decided under the lock, so a concurrent Enqueue either lands before
 			// this check or sees running=false and starts a new worker.
-			g.running, g.pending = false, nil
-			if m.active == guildID {
-				m.active = 0
-			}
+			g.running, g.pending, g.leaveNow = false, nil, false
+			delete(m.active, guildID)
 			m.mu.Unlock()
 			return
 		}
+		idled = false
 		it := g.pending[0]
 		g.pending = g.pending[1:]
 		ctx, cancel := context.WithCancel(m.base)
@@ -298,6 +344,68 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 		m.mu.Lock()
 		g.current = nil
 		m.mu.Unlock()
+	}
+}
+
+// acquireSlot waits for a free voice slot, first nudging idle guilds so one of
+// them hands its slot over. It reports false on shutdown.
+func (m *Manager) acquireSlot() bool {
+	select {
+	case m.slot <- struct{}{}:
+		return true
+	default:
+	}
+	m.mu.Lock()
+	m.waiting++
+	for id := range m.active {
+		m.guilds[id].nudge()
+	}
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.waiting--
+		m.mu.Unlock()
+	}()
+	select {
+	case m.slot <- struct{}{}:
+		return true
+	case <-m.base.Done():
+		return false
+	}
+}
+
+// canIdle reports whether to stay in voice with an empty queue. Caller holds m.mu.
+func (s *session) canIdle() bool {
+	m := s.m
+	return m.idle > 0 && s.conn != nil && m.base.Err() == nil && !s.g.leaveNow && !s.g.kicked && m.waiting == 0
+}
+
+// idleWait stays in voice until a track is queued, the idle timeout passes,
+// stop is asked for, the bot is kicked, another guild needs the slot, or
+// shutdown.
+func (s *session) idleWait() {
+	m, g := s.m, s.g
+	timer := m.after(m.idle)
+	s.log.Info("queue: idle in voice", "channel", s.channel, "timeout", m.idle)
+	for {
+		m.mu.Lock()
+		if len(g.pending) > 0 || !s.canIdle() {
+			g.idle = false
+			m.mu.Unlock()
+			return
+		}
+		g.idle = true
+		m.mu.Unlock()
+
+		select {
+		case <-g.wake:
+		case <-timer:
+			m.mu.Lock()
+			g.idle = false
+			m.mu.Unlock()
+			return
+		case <-m.base.Done():
+		}
 	}
 }
 
@@ -372,6 +480,7 @@ func (m *Manager) Disconnected(guildID snowflake.ID) bool {
 		textChannel = g.current.TextChannel
 		g.current.cancel()
 	}
+	g.nudge() // an idle worker leaves too
 	m.mu.Unlock()
 
 	m.logger.Info("queue: disconnected from voice by someone else; queue discarded", "guild", guildID)
@@ -397,13 +506,14 @@ func (m *Manager) Stop(guildID snowflake.ID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.guilds[guildID]
-	if g == nil || (g.current == nil && len(g.pending) == 0) {
+	if g == nil || (g.current == nil && len(g.pending) == 0 && !g.idle) {
 		return false
 	}
-	g.pending = nil
+	g.pending, g.leaveNow = nil, true // no idle wait: stop means leave
 	if g.current != nil {
 		g.current.cancel()
 	}
+	g.nudge()
 	return true
 }
 

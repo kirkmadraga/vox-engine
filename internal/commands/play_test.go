@@ -96,7 +96,7 @@ func TestPlayReplies(t *testing.T) {
 		{"not youtube", &fakeQueue{}, "https://vimeo.com/1", "That doesn't look like a YouTube video link."},
 		{"playlist", &fakeQueue{}, "https://www.youtube.com/playlist?list=PLx", "Playlists aren't supported"},
 		{"queued behind", &fakeQueue{pos: queue.Position{Ahead: 2}}, "youtu.be/jNQXAC9IVRw", "Queued <https://youtu.be/jNQXAC9IVRw> (2 ahead of it)."},
-		{"other server", &fakeQueue{pos: queue.Position{OtherGuild: true}}, "youtu.be/jNQXAC9IVRw", "playing in another server"},
+		{"other server", &fakeQueue{pos: queue.Position{OtherGuild: true}}, "youtu.be/jNQXAC9IVRw", "busy playing in other servers right now and will start as soon as I'm free."},
 		{"full", &fakeQueue{err: queue.ErrFull}, "youtu.be/jNQXAC9IVRw", "The queue is full."},
 		{"other error", &fakeQueue{err: errors.New("shutting down")}, "youtu.be/jNQXAC9IVRw", "Couldn't queue that"},
 	}

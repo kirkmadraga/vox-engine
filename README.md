@@ -28,8 +28,12 @@ to anyone not allowed.
 
 ## How it works
 
-- Queue per server (limit configurable), one server in voice at a time. The bot
-  leaves when the queue ends, and drops the queue if someone disconnects it.
+- Queue per server (limit configurable). One server in voice at a time by
+  default; `max_voice_sessions` allows more. The bot leaves when the queue
+  ends, or, with `voice_idle_timeout` set (e.g. `2m`), stays in voice that long
+  so the next song starts right away, giving way at once to another server
+  waiting for a voice slot. `stop` leaves immediately, and the queue is dropped
+  if someone disconnects the bot.
 - Audio is fetched once with yt-dlp, checked, and cached as Ogg Opus. The cache is
   capped by size and by time since last played.
 - Access lists and the cache index live in one SQLite file.
@@ -79,7 +83,8 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
    The other settings are documented in the file.
 4. Run it from the folder holding `config.yaml` (relative paths resolve from
    there): `./vox-engine`, or `go run ./cmd/vox-engine`. Add `-debug` to log why messages
-   are ignored.
+   are ignored. `./vox-engine -check-config` only checks `.env` and `config.yaml`
+   and exits (status 1 on errors), e.g. before restarting after an edit.
 5. In Discord: `@Bot allow guild`, then `@Bot allow @friend` for anyone who
    should be able to play music.
 
