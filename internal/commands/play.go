@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/spotify"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
@@ -28,16 +30,20 @@ type Queue interface {
 	List(guildID snowflake.ID) queue.Listing
 }
 
-// Play is "@Bot play <YouTube link | search words | number>". Links are played
-// directly. Search words list the top YouTube results, remembered for the
-// caller; "play <number>" then queues one of them.
+// Play is "@Bot play <YouTube link | Spotify track link | search words | number>".
+// YouTube links are played directly; Spotify tracks are matched to a YouTube
+// video (see playSpotify). Search words list the top YouTube results,
+// remembered for the caller; "play <number>" then queues one of them.
 type Play struct {
-	Voice   VoiceLocator
-	Queue   Queue
-	YouTube func(videoID string) queue.LoadFunc                                 // loads a video through the cache
-	Search  func(ctx context.Context, query string, n int) ([]ytdlp.Hit, error) // top YouTube results; nil = links only
-	Results int                                                                 // how many results search words list
-	Recent  *RecentSearches                                                     // each caller's last results, for "play <number>"
+	Voice       VoiceLocator
+	Queue       Queue
+	YouTube     func(videoID string) queue.LoadFunc                                 // loads a video through the cache
+	Search      func(ctx context.Context, query string, n int) ([]ytdlp.Hit, error) // top YouTube results; nil = links only
+	Results     int                                                                 // how many results search words list
+	Recent      *RecentSearches                                                     // each caller's last results, for "play <number>"
+	Spotify     func(ctx context.Context, trackID string) (spotify.Track, error)    // Spotify track details; nil = no Spotify links
+	SearchMusic func(ctx context.Context, query string, n int) ([]ytdlp.Hit, error) // YouTube Music songs; nil = skip that step
+	Logger      *slog.Logger                                                        // optional: how Spotify tracks were matched
 }
 
 func (Play) Name() string { return "play" }
@@ -55,7 +61,9 @@ func (c Play) Run(ctx context.Context, req Request) error {
 		return c.enqueueVideo(ctx, req, ytdlp.Hit{ID: id})
 	case errors.Is(err, ytdlp.ErrPlaylist):
 		return reply(ctx, req, "Playlists aren't supported, only single videos.")
-	case ytdlp.LooksLikeLink(req.Args), c.Search == nil, c.Recent == nil:
+	case spotify.IsLink(req.Args) && c.Spotify != nil && c.Search != nil && c.Recent != nil:
+		return c.playSpotify(ctx, req)
+	case ytdlp.LooksLikeLink(req.Args), spotify.IsLink(req.Args), c.Search == nil, c.Recent == nil:
 		return reply(ctx, req, "That doesn't look like a YouTube video link.")
 	}
 

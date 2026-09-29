@@ -158,7 +158,7 @@ func TestInvalidRefreshKeepsCookies(t *testing.T) {
 
 func TestSearchNeverSavesCookies(t *testing.T) {
 	real := writeCookies(t, "SID=old")
-	r := &cookieRunner{stdout: "VOXMETA jNQXAC9IVRw 19 x\n", write: cookieFile("SID=new")}
+	r := &cookieRunner{stdout: zooLine, write: cookieFile("SID=new")}
 	if _, err := (&Searcher{Runner: r, Cookies: real}).SearchN(context.Background(), "q", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestNoCookiesNoCopies(t *testing.T) {
 	if _, err := (Downloader{Runner: dr, Lock: lock}).Fetch(context.Background(), vid, "d"); err != nil {
 		t.Fatal(err)
 	}
-	sr := &cookieRunner{stdout: "VOXMETA jNQXAC9IVRw 19 x\n"}
+	sr := &cookieRunner{stdout: zooLine}
 	if _, err := (&Searcher{Runner: sr, Lock: lock}).SearchN(context.Background(), "q", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestSearchRunsDuringDownload(t *testing.T) {
 
 	searched := make(chan error)
 	go func() {
-		_, err := (&Searcher{Runner: &cookieRunner{stdout: "VOXMETA jNQXAC9IVRw 19 x\n"}, Cookies: real, Lock: lock}).SearchN(context.Background(), "q", 1)
+		_, err := (&Searcher{Runner: &cookieRunner{stdout: zooLine}, Cookies: real, Lock: lock}).SearchN(context.Background(), "q", 1)
 		searched <- err
 	}()
 	select {

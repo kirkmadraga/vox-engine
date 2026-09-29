@@ -2,11 +2,12 @@ package ytdlp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,9 @@ const MaxResults = 10
 type Hit struct {
 	ID       string
 	Title    string        // may be empty
-	Duration time.Duration // 0 if unknown
+	Duration time.Duration // 0 if unknown (always 0 for YouTube Music results)
+	Channel  string        // may be empty (always empty for YouTube Music results)
+	Verified bool          // the channel is verified
 }
 
 // Searcher finds YouTube videos for some words using yt-dlp. It only lists
@@ -44,19 +47,34 @@ type Searcher struct {
 	mu sync.Mutex // searches run one at a time
 }
 
-// SearchArgs returns the yt-dlp arguments for the first n results for query,
-// with the configured cookies file. The query is only ever passed after the
-// "ytsearchN:" prefix, so it can't be read as an option.
-func (s *Searcher) SearchArgs(query string, n int) []string {
-	return s.searchArgs(query, n, s.Cookies)
+// searchFields are printed for every result, as one JSON object per line.
+const searchFields = "%(.{id,duration,title,channel,channel_is_verified})j"
+
+// MusicSearchURL is the YouTube Music "Songs" search for query. The query is
+// URL-encoded, so it can't be read as an option or change the URL.
+func MusicSearchURL(query string) string {
+	return "https://music.youtube.com/search?q=" + url.QueryEscape(cleanQuery(query)) + "#songs"
 }
 
-func (s *Searcher) searchArgs(query string, n int, cookies string) []string {
+// SearchArgs returns the yt-dlp arguments for the first n YouTube results for
+// query, with the configured cookies file. The query is only ever passed after
+// the "ytsearchN:" prefix, so it can't be read as an option.
+func (s *Searcher) SearchArgs(query string, n int) []string {
+	return s.args(s.Cookies, fmt.Sprintf("ytsearch%d:%s", n, cleanQuery(query)))
+}
+
+// MusicSearchArgs returns the yt-dlp arguments for the first n YouTube Music
+// song results for query, with the configured cookies file.
+func (s *Searcher) MusicSearchArgs(query string, n int) []string {
+	return s.args(s.Cookies, "--playlist-items", fmt.Sprintf("1:%d", n), MusicSearchURL(query))
+}
+
+func (s *Searcher) args(cookies string, target ...string) []string {
 	args := []string{
 		"--flat-playlist",
 		"--no-warnings",
 		"--socket-timeout", "20",
-		"--print", metaMarker + "%(id)s %(duration)s %(title)s",
+		"--print", metaMarker + searchFields,
 	}
 	if s.JSRuntime != "" {
 		args = append(args, "--js-runtimes", s.JSRuntime)
@@ -64,7 +82,7 @@ func (s *Searcher) searchArgs(query string, n int, cookies string) []string {
 	if cookies != "" {
 		args = append(args, "--cookies", cookies)
 	}
-	return append(args, fmt.Sprintf("ytsearch%d:%s", n, cleanQuery(query)))
+	return append(args, target...)
 }
 
 // cleanQuery flattens whitespace (including newlines) and caps the length.
@@ -80,6 +98,23 @@ func cleanQuery(q string) string {
 // YouTube's order, or ErrNoResults.
 func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, error) {
 	n = min(max(n, 1), MaxResults)
+	return s.search(ctx, query, n, func(cookies string) []string {
+		return s.args(cookies, fmt.Sprintf("ytsearch%d:%s", n, cleanQuery(query)))
+	})
+}
+
+// SearchMusic returns up to n (1..MaxResults) YouTube Music song results for
+// query, in YouTube Music's order, or ErrNoResults. Results carry only an ID
+// and a title.
+func (s *Searcher) SearchMusic(ctx context.Context, query string, n int) ([]Hit, error) {
+	n = min(max(n, 1), MaxResults)
+	return s.search(ctx, query, n, func(cookies string) []string {
+		return s.args(cookies, "--playlist-items", fmt.Sprintf("1:%d", n), MusicSearchURL(query))
+	})
+}
+
+// search runs yt-dlp with args(cookies) and parses up to n results.
+func (s *Searcher) search(ctx context.Context, query string, n int, args func(cookies string) []string) ([]Hit, error) {
 	if cleanQuery(query) == "" {
 		return nil, ErrNoResults
 	}
@@ -102,7 +137,7 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, err := s.Runner.Run(ctx, s.Path, s.searchArgs(query, n, cookies))
+	stdout, stderr, err := s.Runner.Run(ctx, s.Path, args(cookies))
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, &Error{Kind: KindTimeout, Detail: fmt.Sprintf("yt-dlp search timed out after %v", timeout)}
@@ -115,27 +150,33 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 		}
 		return nil, classify(string(stderr), err)
 	}
+	return parseResults(string(stdout), n)
+}
 
-	// VOXMETA <id> <duration seconds or NA> <title, may contain spaces>
+// parseResults reads "VOXMETA <json>" lines. Results that aren't videos (e.g.
+// channels) are skipped; if nothing valid remains, that's an error.
+func parseResults(stdout string, n int) ([]Hit, error) {
 	var hits []Hit
 	var bad []string
-	for _, line := range strings.Split(string(stdout), "\n") {
+	for _, line := range strings.Split(stdout, "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(line), metaMarker)
 		if !ok {
 			continue
 		}
-		id, rest, _ := strings.Cut(rest, " ")
-		duration, title, _ := strings.Cut(rest, " ")
-		if !ValidID(id) {
-			bad = append(bad, id) // not a video (or garbage): skip it
+		var r struct {
+			ID       string  `json:"id"`
+			Duration float64 `json:"duration"`
+			Title    string  `json:"title"`
+			Channel  string  `json:"channel"`
+			Verified bool    `json:"channel_is_verified"`
+		}
+		if err := json.Unmarshal([]byte(rest), &r); err != nil || !ValidID(r.ID) {
+			bad = append(bad, truncate(rest, 60))
 			continue
 		}
-		h := Hit{ID: id, Title: strings.TrimSpace(title)}
-		if secs, err := strconv.ParseFloat(duration, 64); err == nil && secs > 0 {
-			h.Duration = time.Duration(secs * float64(time.Second))
-		}
-		if h.Title == "NA" {
-			h.Title = ""
+		h := Hit{ID: r.ID, Title: strings.TrimSpace(r.Title), Channel: strings.TrimSpace(r.Channel), Verified: r.Verified}
+		if r.Duration > 0 {
+			h.Duration = time.Duration(r.Duration * float64(time.Second))
 		}
 		hits = append(hits, h)
 		if len(hits) == n {
@@ -146,7 +187,7 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 	case len(hits) > 0:
 		return hits, nil
 	case len(bad) > 0:
-		return nil, &Error{Kind: KindFailed, Detail: fmt.Sprintf("search returned invalid video ids %q", bad)}
+		return nil, &Error{Kind: KindFailed, Detail: fmt.Sprintf("search returned no valid videos: %q", bad)}
 	}
 	return nil, ErrNoResults
 }

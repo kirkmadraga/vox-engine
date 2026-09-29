@@ -191,7 +191,7 @@ func (m *Manager) load(guildID snowflake.ID, it *item) {
 	m.mu.Lock()
 	it.loaded, it.err = loaded, err
 	if err == nil {
-		if loaded.Title != "" {
+		if loaded.Title != "" && it.Title == "" { // a title given at enqueue (e.g. "Artist – Song" from Spotify) wins
 			it.Title = loaded.Title
 		}
 		if loaded.Duration > 0 {

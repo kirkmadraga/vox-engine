@@ -30,6 +30,7 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/discordio"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
 	"github.com/kirkmadraga/vox-engine/internal/router"
+	"github.com/kirkmadraga/vox-engine/internal/spotify"
 	"github.com/kirkmadraga/vox-engine/internal/store"
 	"github.com/kirkmadraga/vox-engine/internal/voice"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
@@ -199,7 +200,11 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	known := func(name string) bool { _, ok := registry.Lookup(name); return ok }
 	registry, err = commands.NewRegistry(
 		commands.Ping{},
-		commands.Play{Voice: voiceStates, Queue: q, YouTube: youtube, Search: searcher.SearchN, Results: cfg.SearchResults, Recent: recent},
+		commands.Play{
+			Voice: voiceStates, Queue: q, YouTube: youtube,
+			Search: searcher.SearchN, Results: cfg.SearchResults, Recent: recent,
+			Spotify: (&spotify.Client{}).Track, SearchMusic: searcher.SearchMusic, Logger: logger,
+		},
 		commands.Test{Voice: voiceStates, Queue: q, Tone: tone},
 		commands.QueueList{Queue: q},
 		commands.Skip{Queue: q},

@@ -474,3 +474,15 @@ func TestInUseAndOnStart(t *testing.T) {
 	default:
 	}
 }
+
+// A title given at enqueue (e.g. "Artist – Song" from Spotify) isn't replaced
+// by the downloaded one; an untitled track takes the downloaded title.
+func TestEnqueuedTitleWins(t *testing.T) {
+	h := newHarness(t, nil, 0)
+	titled := track("x", 100, load("Black Star", nil, nil))
+	titled.Title = "Radiohead – Black Star"
+	h.m.Enqueue(1, titled)
+	h.rec.waitFor(t, "msg 7: Now playing: **Radiohead – Black Star** (3:05)")
+	h.m.Enqueue(1, track("y", 100, load("Loaded title", nil, nil)))
+	h.rec.waitFor(t, "msg 7: Now playing: **Loaded title** (3:05)")
+}
