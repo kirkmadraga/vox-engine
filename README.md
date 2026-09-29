@@ -54,8 +54,9 @@ go build -o bot ./cmd/bot
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o bot ./cmd/bot   # cross-compile for Linux
 ```
 
-`scripts\check.ps1` runs vet, the race-enabled tests (needs gcc on PATH, else
-without `-race`), and both Windows and Linux builds into `dist/`.
+`scripts/check.sh` (bash; on Windows run it from MSYS2) runs vet, the
+race-enabled tests (needs gcc on PATH, else without `-race`), and both Windows
+and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
 
 ### Configure and run
 

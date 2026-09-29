@@ -37,8 +37,8 @@ cookies.txt
 *cookies*.txt
 
 # Local deploy target (server name/port): never commit
-deploy.local.psd1
+deploy.local.env
 
 # Deployment scripts for the maintainer's own server: kept local, not published
 /deploy/
-/scripts/deploy.ps1
+/scripts/deploy.sh
