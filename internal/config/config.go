@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -98,10 +99,17 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 	if token == "" {
 		return Config{}, errors.New("DISCORD_TOKEN is not set (put it in .env or the environment)")
 	}
+	if !plausibleToken(token) {
+		return Config{}, errors.New("DISCORD_TOKEN doesn't look like a bot token; copy it again from the Bot page of the Discord developer portal")
+	}
 
 	owners := make([]snowflake.ID, 0, len(f.OwnerUserIDs))
 	for i, s := range f.OwnerUserIDs {
-		id, err := snowflake.Parse(strings.TrimSpace(s))
+		s = strings.TrimSpace(s)
+		if exampleOwnerIDs[s] {
+			return Config{}, fmt.Errorf("owner_user_ids[%d] is still the example value %s; replace it with your Discord user ID (Developer Mode, then right-click yourself, Copy User ID)", i, s)
+		}
+		id, err := snowflake.Parse(s)
 		if err != nil || id == 0 {
 			return Config{}, fmt.Errorf("owner_user_ids[%d]: %q is not a valid Discord ID", i, s)
 		}
@@ -168,4 +176,32 @@ func valueOr(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// exampleOwnerIDs are the placeholders in config.example.yaml. Left in place,
+// they'd start a bot with owners nobody is, which then silently ignores its
+// real owner.
+var exampleOwnerIDs = map[string]bool{"111111111111111111": true, "222222222222222222": true}
+
+// plausibleToken reports whether s has the shape of a Discord bot token:
+// three dot-separated parts, the first being the bot's numeric ID in base64.
+// It catches paste mistakes early; Discord itself is the final judge.
+func plausibleToken(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return false
+	}
+	id, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(parts[0], "="))
+	if err != nil {
+		id, err = base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[0], "="))
+	}
+	if err != nil || len(id) == 0 {
+		return false
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

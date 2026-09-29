@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,21 +23,21 @@ func env(token string) func(string) string {
 func TestParseValid(t *testing.T) {
 	yaml := `
 owner_user_ids:
-  - "111111111111111111"
-  - "222222222222222222"
+  - "1100000000000000011"
+  - "1100000000000000012"
 cache_dir: ./audio
 max_concurrent_jobs: 2
 max_queue_length: 25
 `
-	cfg, err := Parse([]byte(yaml), env("tok"))
+	cfg, err := Parse([]byte(yaml), env(fakeToken))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	want := []snowflake.ID{111111111111111111, 222222222222222222}
+	want := []snowflake.ID{1100000000000000011, 1100000000000000012}
 	if len(cfg.OwnerIDs) != 2 || cfg.OwnerIDs[0] != want[0] || cfg.OwnerIDs[1] != want[1] {
 		t.Errorf("OwnerIDs = %v, want %v", cfg.OwnerIDs, want)
 	}
-	if cfg.Token != "tok" || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 {
+	if cfg.Token != fakeToken || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 {
 		t.Errorf("unexpected cfg: %+v", cfg)
 	}
 	if cfg.Database != "data/bot.db" || cfg.CacheMaxBytes != 512<<20 || cfg.CacheMaxAge != 12*time.Hour {
@@ -52,7 +53,7 @@ func TestParseOwnerListsEmptyOrMissing(t *testing.T) {
 		"empty file":  "",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := Parse([]byte(yaml), env("tok"))
+			cfg, err := Parse([]byte(yaml), env(fakeToken))
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
@@ -68,7 +69,7 @@ func TestParseOwnerListsEmptyOrMissing(t *testing.T) {
 
 func TestParseUnquotedIDKeepsPrecision(t *testing.T) {
 	// A large unquoted ID must not be rounded through float64.
-	cfg, err := Parse([]byte("owner_user_ids:\n  - 123456789012345678\n"), env("tok"))
+	cfg, err := Parse([]byte("owner_user_ids:\n  - 123456789012345678\n"), env(fakeToken))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -83,17 +84,17 @@ func TestParseErrors(t *testing.T) {
 	}{
 		"missing token":      {"", "", "DISCORD_TOKEN"},
 		"blank token":        {"", "   ", "DISCORD_TOKEN"},
-		"malformed id":       {"owner_user_ids: [\"abc\"]\n", "tok", "owner_user_ids[0]"},
-		"zero id":            {"owner_user_ids: [\"0\"]\n", "tok", "owner_user_ids[0]"},
-		"unknown key":        {"owner_ids: []\n", "tok", "owner_ids"},
-		"bad jobs":           {"max_concurrent_jobs: 0\n", "tok", "max_concurrent_jobs"},
-		"bad queue length":   {"max_queue_length: 0\n", "tok", "max_queue_length"},
-		"negative cache cap": {"cache_max_bytes: -1\n", "tok", "cache_max_bytes"},
-		"bad cache age":      {"cache_max_age: soon\n", "tok", "cache_max_age"},
-		"negative cache age": {"cache_max_age: -1h\n", "tok", "cache_max_age"},
-		"old state_file key": {"state_file: ./data/access.json\n", "tok", "state_file"},
-		"negative duration":  {"max_duration_seconds: -5\n", "tok", "max_duration_seconds"},
-		"invalid yaml":       {"owner_user_ids: [\n", "tok", "parse config"},
+		"malformed id":       {"owner_user_ids: [\"abc\"]\n", fakeToken, "owner_user_ids[0]"},
+		"zero id":            {"owner_user_ids: [\"0\"]\n", fakeToken, "owner_user_ids[0]"},
+		"unknown key":        {"owner_ids: []\n", fakeToken, "owner_ids"},
+		"bad jobs":           {"max_concurrent_jobs: 0\n", fakeToken, "max_concurrent_jobs"},
+		"bad queue length":   {"max_queue_length: 0\n", fakeToken, "max_queue_length"},
+		"negative cache cap": {"cache_max_bytes: -1\n", fakeToken, "cache_max_bytes"},
+		"bad cache age":      {"cache_max_age: soon\n", fakeToken, "cache_max_age"},
+		"negative cache age": {"cache_max_age: -1h\n", fakeToken, "cache_max_age"},
+		"old state_file key": {"state_file: ./data/access.json\n", fakeToken, "state_file"},
+		"negative duration":  {"max_duration_seconds: -5\n", fakeToken, "max_duration_seconds"},
+		"invalid yaml":       {"owner_user_ids: [\n", fakeToken, "parse config"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -106,7 +107,7 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "nope.yaml"), env("tok"))
+	_, err := Load(filepath.Join(t.TempDir(), "nope.yaml"), env(fakeToken))
 	if err == nil {
 		t.Fatal("expected error for missing config file")
 	}
@@ -144,7 +145,7 @@ func TestParseCacheSettings(t *testing.T) {
 		"minutes":  {"cache_max_age: 90m\n", "data/bot.db", 512 << 20, 90 * time.Minute},
 	}
 	for name, c := range cases {
-		cfg, err := Parse([]byte(c.yaml), env("tok"))
+		cfg, err := Parse([]byte(c.yaml), env(fakeToken))
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue
@@ -156,11 +157,11 @@ func TestParseCacheSettings(t *testing.T) {
 }
 
 func TestParseTestTone(t *testing.T) {
-	cfg, _ := Parse([]byte(""), env("tok"))
+	cfg, _ := Parse([]byte(""), env(fakeToken))
 	if cfg.TestTone != "assets/tone.opus" {
 		t.Errorf("default test_tone = %q", cfg.TestTone)
 	}
-	cfg, _ = Parse([]byte("test_tone: /opt/bot/tone.opus\n"), env("tok"))
+	cfg, _ = Parse([]byte("test_tone: /opt/bot/tone.opus\n"), env(fakeToken))
 	if cfg.TestTone != "/opt/bot/tone.opus" {
 		t.Errorf("test_tone = %q", cfg.TestTone)
 	}
@@ -175,11 +176,11 @@ func TestDefaultTestToneIsCommitted(t *testing.T) {
 }
 
 func TestParseCookies(t *testing.T) {
-	cfg, err := Parse([]byte("ytdlp_cookies: \" ./data/cookies.txt \"\n"), env("tok"))
+	cfg, err := Parse([]byte("ytdlp_cookies: \" ./data/cookies.txt \"\n"), env(fakeToken))
 	if err != nil || cfg.YtdlpCookies != "./data/cookies.txt" {
 		t.Errorf("ytdlp_cookies = %q, %v", cfg.YtdlpCookies, err)
 	}
-	if cfg, _ := Parse([]byte(""), env("tok")); cfg.YtdlpCookies != "" {
+	if cfg, _ := Parse([]byte(""), env(fakeToken)); cfg.YtdlpCookies != "" {
 		t.Errorf("default = %q, want none", cfg.YtdlpCookies)
 	}
 }
@@ -190,14 +191,58 @@ func TestParseYtdlpMinInterval(t *testing.T) {
 		"ytdlp_min_interval: 45s\n":   45 * time.Second,
 		"ytdlp_min_interval: \"0\"\n": 0,
 	} {
-		cfg, err := Parse([]byte(yaml), env("tok"))
+		cfg, err := Parse([]byte(yaml), env(fakeToken))
 		if err != nil || cfg.YtdlpMinInterval != want {
 			t.Errorf("%q: got %v, %v; want %v", yaml, cfg.YtdlpMinInterval, err, want)
 		}
 	}
 	for _, bad := range []string{"ytdlp_min_interval: soon\n", "ytdlp_min_interval: -5s\n"} {
-		if _, err := Parse([]byte(bad), env("tok")); err == nil || !strings.Contains(err.Error(), "ytdlp_min_interval") {
+		if _, err := Parse([]byte(bad), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "ytdlp_min_interval") {
 			t.Errorf("%q: err = %v", bad, err)
 		}
+	}
+}
+
+// fakeToken has the shape of a real bot token (base64 ID . timestamp . HMAC)
+// without being one.
+var fakeToken = base64.RawStdEncoding.EncodeToString([]byte("1100000000000000001")) + ".GxYz12.fake-hmac-part-for-tests"
+
+func TestTokenShape(t *testing.T) {
+	good := []string{
+		fakeToken,
+		base64.StdEncoding.EncodeToString([]byte("1100000000000000001")) + ".a.b", // padded
+	}
+	for _, tok := range good {
+		if _, err := Parse(nil, env(tok)); err != nil {
+			t.Errorf("token %q rejected: %v", tok, err)
+		}
+	}
+	bad := []string{
+		"tok",
+		"Bot " + fakeToken, // prefix pasted along
+		"abc.def",          // two parts
+		"!!!.def.ghi",      // not base64
+		base64.RawStdEncoding.EncodeToString([]byte("hello")) + ".a.b", // not a numeric ID
+		fakeToken + ".extra",
+	}
+	for _, tok := range bad {
+		_, err := Parse(nil, env(tok))
+		if err == nil || !strings.Contains(err.Error(), "doesn't look like a bot token") {
+			t.Errorf("token %q: err = %v", tok, err)
+		}
+	}
+}
+
+func TestExampleOwnerIDsRejected(t *testing.T) {
+	example, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Parse(example, env(fakeToken))
+	if err == nil || !strings.Contains(err.Error(), "still the example value") {
+		t.Errorf("unedited example config: err = %v", err)
+	}
+	if _, err := Parse([]byte("owner_user_ids: [\"222222222222222222\"]\n"), env(fakeToken)); err == nil {
+		t.Error("second example ID should be rejected too")
 	}
 }

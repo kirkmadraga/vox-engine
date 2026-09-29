@@ -2,6 +2,8 @@
 
 # Owners: always allowed everywhere, can run every command, including access management.
 # Not editable at runtime. IDs are quoted strings.
+# REPLACE these examples with real IDs (Discord: Developer Mode on, right-click
+# your name, Copy User ID). The bot refuses to start while they're unchanged.
 owner_user_ids:
   - "111111111111111111"   # main
   - "222222222222222222"   # alt

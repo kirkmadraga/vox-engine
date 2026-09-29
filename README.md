@@ -60,13 +60,19 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
 
 ### Configure and run
 
-1. Create a bot in the Discord developer portal and invite it with permissions
-   `3148800` (View Channel, Send Messages, Connect, Speak). No privileged
-   intents are needed.
+1. Create an application in the [Discord developer portal](https://discord.com/developers/applications),
+   copy the bot token from its **Bot** page, and invite the bot with permissions
+   `3148800` (View Channel, Send Messages, Connect, Speak):
+   `https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=3148800`.
+   No privileged intents are needed.
 2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
-3. Copy `config.example.yaml` to `config.yaml`, then set your user ID in
-   `owner_user_ids` and pick `ytdlp_js_runtime`. The other settings are
-   documented in the file.
+3. Copy `config.example.yaml` to `config.yaml`, then:
+   - put your Discord user ID in `owner_user_ids` (in Discord: Settings →
+     Advanced → Developer Mode on, then right-click your name → Copy User ID;
+     the bot refuses to start with the example IDs still there);
+   - pick `ytdlp_js_runtime` (`deno` or `node`; `quickjs` on old CPUs).
+
+   The other settings are documented in the file.
 4. Run it from the folder holding `config.yaml` (relative paths resolve from
    there): `./bot`, or `go run ./cmd/bot`. Add `-debug` to log why messages
    are ignored.
@@ -77,8 +83,39 @@ It writes `cache/` (audio) and `data/bot.db` (access lists, cache index), and
 needs `assets/tone.opus` for `test`. How you keep it running (systemd, a
 scheduled task, a container) is up to you.
 
-**Hosting note:** YouTube blocks many datacenter IPs ("Sign in to confirm you're
-not a bot"). A home connection just works. On a server, point `ytdlp_cookies` at
-a cookies.txt exported from a spare Google account (the file must be writable:
-yt-dlp saves refreshed cookies back). On slow CPUs, yt-dlp's JavaScript challenge
-solving can take about a minute per new video.
+### Hosting on a server: YouTube cookies
+
+YouTube blocks many datacenter IPs ("Sign in to confirm you're not a bot"). A
+home connection just works; on a server, give yt-dlp the login cookies of a
+**spare** Google account (accounts used this way can get flagged, so never use
+your main one):
+
+1. Open a private/incognito browser window and sign in to YouTube with the spare
+   account, then open `https://www.youtube.com/robots.txt` in that same tab.
+2. Export the youtube.com cookies in Netscape `cookies.txt` format, e.g. with the
+   open-source extension "Get cookies.txt LOCALLY" (enable it for private
+   windows; avoid look-alike extensions, some steal logins).
+3. Close the private window without signing out, so YouTube doesn't rotate the
+   exported cookies.
+4. Put the file on the server, readable and **writable** only by the bot (yt-dlp
+   saves refreshed cookies back), e.g. `data/cookies.txt`, and set
+   `ytdlp_cookies: ./data/cookies.txt`.
+
+Treat it like a password: never commit or share it. If downloads start failing
+with the bot-check error again, the cookies have expired: export new ones.
+
+On slow CPUs, yt-dlp's JavaScript challenge solving can take about a minute per
+new video (queued tracks download in the background, so mostly only the first
+song after an idle period waits).
+
+## License
+
+Copyright (C) 2026 Kirk Madraga
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3 of the License. See [LICENSE](LICENSE).
+
+In short: you may use, study, modify and share it, but if you run a modified
+version for users over a network (for example as a public bot), you must offer
+those users the source of your version under the same license.
