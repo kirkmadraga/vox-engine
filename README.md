@@ -50,8 +50,8 @@ On the machine that runs the bot (found on `PATH`, or set in `config.yaml`):
 ### Build
 
 ```bash
-go build -o bot ./cmd/bot
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o bot ./cmd/bot   # cross-compile for Linux
+go build -o vox-engine ./cmd/vox-engine
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o vox-engine ./cmd/vox-engine   # cross-compile for Linux
 ```
 
 `scripts/check.sh` (bash; on Windows run it from MSYS2) runs vet, the
@@ -74,7 +74,7 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
 
    The other settings are documented in the file.
 4. Run it from the folder holding `config.yaml` (relative paths resolve from
-   there): `./bot`, or `go run ./cmd/bot`. Add `-debug` to log why messages
+   there): `./vox-engine`, or `go run ./cmd/vox-engine`. Add `-debug` to log why messages
    are ignored.
 5. In Discord: `@Bot allow guild`, then `@Bot allow @friend` for anyone who
    should be able to play music.

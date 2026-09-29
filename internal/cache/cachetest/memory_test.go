@@ -3,7 +3,7 @@ package cachetest
 import (
 	"testing"
 
-	"bot/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/cache"
 )
 
 func TestMemoryIndex(t *testing.T) {

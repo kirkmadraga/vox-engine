@@ -11,7 +11,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
 )
 
 const self snowflake.ID = 1000

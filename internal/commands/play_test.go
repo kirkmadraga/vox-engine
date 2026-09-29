@@ -9,7 +9,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/queue"
 )
 
 type fakeLocator map[snowflake.ID]snowflake.ID // user -> voice channel

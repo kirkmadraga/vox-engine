@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"bot/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/cache"
 )
 
 // Factory opens a fresh, empty index for one test. reopen returns a new

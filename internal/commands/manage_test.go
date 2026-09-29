@@ -10,8 +10,8 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
-	"bot/internal/access/accesstest"
+	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access/accesstest"
 )
 
 // These tests run the real Policy over the in-memory backend. They depend only

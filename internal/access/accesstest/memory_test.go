@@ -3,7 +3,7 @@ package accesstest
 import (
 	"testing"
 
-	"bot/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access"
 )
 
 func TestMemoryBackend(t *testing.T) {

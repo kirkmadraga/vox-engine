@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"bot/internal/ytdlp"
+	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
 const vid = "jNQXAC9IVRw"

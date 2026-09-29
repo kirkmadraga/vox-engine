@@ -8,9 +8,9 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
-	"bot/internal/access/accesstest"
-	"bot/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access/accesstest"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
 )
 
 // These tests send real message text through the router, the real access Policy

@@ -12,7 +12,7 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/thomas-vilte/dave-go/session"
 
-	"bot/internal/voice"
+	"github.com/kirkmadraga/vox-engine/internal/voice"
 )
 
 // ErrNoDAVE means a voice connection was created without a dave-go session,

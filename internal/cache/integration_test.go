@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"bot/internal/voice"
-	"bot/internal/ytdlp"
+	"github.com/kirkmadraga/vox-engine/internal/voice"
+	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
 func liveDownloader(t *testing.T) ytdlp.Downloader {

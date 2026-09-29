@@ -8,7 +8,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access"
 )
 
 type grantKey struct {

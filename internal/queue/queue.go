@@ -13,7 +13,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/voice"
+	"github.com/kirkmadraga/vox-engine/internal/voice"
 )
 
 // ErrFull means the guild's queue already holds the maximum number of tracks.

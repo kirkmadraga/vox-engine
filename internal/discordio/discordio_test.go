@@ -11,7 +11,7 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
 )
 
 type fakeSender struct {

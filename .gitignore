@@ -9,8 +9,8 @@
 config.yaml
 
 # Build output
-/bot
-/bot.exe
+/vox-engine
+/vox-engine.exe
 /bot.new
 /bot.prev
 /spike

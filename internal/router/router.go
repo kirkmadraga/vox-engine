@@ -8,8 +8,8 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
-	"bot/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
 )
 
 // Message is the part of an incoming Discord message the router needs.

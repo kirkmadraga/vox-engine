@@ -11,8 +11,8 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/commands"
-	"bot/internal/router"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/router"
 )
 
 // handleTimeout bounds how long one message may take to process.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"bot/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/cache"
 )
 
 // CacheIndex is the SQLite cache.Index.

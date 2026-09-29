@@ -11,8 +11,8 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
-	"bot/internal/access/accesstest"
+	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access/accesstest"
 )
 
 // Policy tests use the in-memory backend. They depend only on the Backend

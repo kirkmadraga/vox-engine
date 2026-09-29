@@ -6,7 +6,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access"
 )
 
 // Access is the SQLite access.Backend. Discord IDs are stored as INTEGER:

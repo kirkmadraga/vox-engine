@@ -1,4 +1,4 @@
-module bot
+module github.com/kirkmadraga/vox-engine
 
 go 1.26.0
 

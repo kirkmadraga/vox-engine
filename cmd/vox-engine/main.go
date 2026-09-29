@@ -21,17 +21,17 @@ import (
 	disgovoice "github.com/disgoorg/disgo/voice"
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access"
 
-	audiocache "bot/internal/cache"
-	"bot/internal/commands"
-	"bot/internal/config"
-	"bot/internal/discordio"
-	"bot/internal/queue"
-	"bot/internal/router"
-	"bot/internal/store"
-	"bot/internal/voice"
-	"bot/internal/ytdlp"
+	audiocache "github.com/kirkmadraga/vox-engine/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/config"
+	"github.com/kirkmadraga/vox-engine/internal/discordio"
+	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/router"
+	"github.com/kirkmadraga/vox-engine/internal/store"
+	"github.com/kirkmadraga/vox-engine/internal/voice"
+	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
 func main() {

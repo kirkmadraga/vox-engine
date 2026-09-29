@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"bot/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/cache"
 )
 
 // Memory is a non-persistent Index for tests.

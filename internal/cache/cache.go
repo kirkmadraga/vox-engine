@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"bot/internal/ytdlp"
+	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
 // Fetcher downloads a video's audio into dir (a fresh, empty directory owned

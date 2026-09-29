@@ -8,8 +8,8 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/queue"
-	"bot/internal/ytdlp"
+	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
 // PlaybackCommands share play's access (see access.Options.Inherit).

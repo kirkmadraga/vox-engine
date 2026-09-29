@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"bot/internal/access"
-	"bot/internal/access/accesstest"
-	"bot/internal/cache"
-	"bot/internal/cache/cachetest"
+	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access/accesstest"
+	"github.com/kirkmadraga/vox-engine/internal/cache"
+	"github.com/kirkmadraga/vox-engine/internal/cache/cachetest"
 )
 
 func openAt(t *testing.T, path string) *DB {

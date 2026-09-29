@@ -11,7 +11,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/voice"
+	"github.com/kirkmadraga/vox-engine/internal/voice"
 )
 
 const fixture = "../voice/testdata/tone-1s.opus"

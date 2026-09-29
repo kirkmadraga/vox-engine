@@ -49,8 +49,8 @@ fi
 
 mkdir -p dist
 step "build windows/amd64"
-GOOS=windows GOARCH=amd64 "$GO" build -ldflags '-s -w' -o dist/bot.exe ./cmd/bot
+GOOS=windows GOARCH=amd64 "$GO" build -ldflags '-s -w' -o dist/vox-engine.exe ./cmd/vox-engine
 step "build linux/amd64"
-GOOS=linux GOARCH=amd64 "$GO" build -ldflags '-s -w' -o dist/bot ./cmd/bot
+GOOS=linux GOARCH=amd64 "$GO" build -ldflags '-s -w' -o dist/vox-engine ./cmd/vox-engine
 
 echo "All checks passed."

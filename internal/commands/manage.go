@@ -9,7 +9,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
-	"bot/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/access"
 )
 
 // ManagementCommands are owner-only and can never be granted.
