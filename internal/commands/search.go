@@ -82,7 +82,7 @@ func formatResults(hits []ytdlp.Hit) string {
 		}
 		b.WriteString("<https://youtu.be/" + h.ID + ">\n")
 	}
-	b.WriteString("Pick one with `play <number>`.")
+	b.WriteString("To pick one, play its number.")
 	return truncate(b.String(), maxMessageLen)
 }
 

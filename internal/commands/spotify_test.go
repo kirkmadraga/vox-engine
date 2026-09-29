@@ -138,7 +138,7 @@ func TestSpotifyNoSureMatchListsResults(t *testing.T) {
 	}
 	r := s.run(t, uptownLink)
 	if !strings.HasPrefix(r.Content, "Couldn't find a sure match for **Mark Ronson, Bruno Mars – Uptown Funk (feat. Bruno Mars)** on YouTube.\n1. ") ||
-		!strings.HasSuffix(r.Content, "Pick one with `play <number>`.") {
+		!strings.HasSuffix(r.Content, "To pick one, play its number.") {
 		t.Errorf("reply = %q", r.Content)
 	}
 	if len(s.q.queued) != 0 {

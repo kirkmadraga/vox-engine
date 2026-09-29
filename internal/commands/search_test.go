@@ -48,7 +48,7 @@ func TestPlayWordsListResultsWithoutQueueing(t *testing.T) {
 	want := "1. **Never Gonna Give You Up** (3:33) <https://youtu.be/dQw4w9WgXcQ>\n" +
 		`2. **Me\_at \*the\* zoo** <https://youtu.be/jNQXAC9IVRw>` + "\n" +
 		"3. <https://youtu.be/abcdefghijk>\n" +
-		"Pick one with `play <number>`."
+		"To pick one, play its number."
 	if r.Content != want {
 		t.Errorf("reply:\n%s\nwant:\n%s", r.Content, want)
 	}
@@ -277,7 +277,7 @@ func TestTenLongResultsFitOneMessage(t *testing.T) {
 		hits = append(hits, ytdlp.Hit{ID: "abcdefghij" + string(rune('a'+i)), Title: strings.Repeat("Title_", 17)[:100], Duration: 3*time.Hour + 59*time.Minute})
 	}
 	out := formatResults(hits)
-	if !strings.HasSuffix(out, "Pick one with `play <number>`.") || !strings.Contains(out, "10. ") {
+	if !strings.HasSuffix(out, "To pick one, play its number.") || !strings.Contains(out, "10. ") {
 		t.Errorf("list was cut short (%d chars):\n%s", len(out), out)
 	}
 }

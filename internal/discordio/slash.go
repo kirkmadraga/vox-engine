@@ -64,7 +64,7 @@ func SlashCommands(grantable []string) []discord.ApplicationCommandCreate {
 			Description: "Play a YouTube or Spotify link, search YouTube, or pick a search result by number",
 			Contexts:    guildOnly,
 			Options: []discord.ApplicationCommandOption{
-				discord.ApplicationCommandOptionString{Name: "query", Description: "A link, search words, or a result number", Required: true},
+				discord.ApplicationCommandOptionString{Name: "query", Description: "YouTube link, Spotify link, search term, or search result number", Required: true},
 			},
 		},
 		simple("test", "Play a short test tone"),
