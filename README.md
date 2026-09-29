@@ -1,7 +1,7 @@
 # vox-engine
 
-A small, self-hosted Discord music bot in Go. It plays YouTube audio in voice
-channels, with end-to-end voice encryption (DAVE), and is built to run on weak
+A small, self-hosted Discord music bot in Go. It plays YouTube and Spotify links
+in voice channels, with end-to-end voice encryption (DAVE), and is built to run on weak
 hardware: one pure-Go binary, no cgo, Opus passed straight through with no
 re-encoding.
 
@@ -14,6 +14,7 @@ YouTube results and then `@Bot play <number>` to pick one.
 |---|---|---|
 | `ping` | Replies "@you pong" | Anyone, in allowed servers |
 | `play <YouTube link>` | Adds the track to this server's queue and joins your voice channel | Granted users |
+| `play <Spotify track link>` | Same, for a single Spotify track (albums and playlists aren't supported yet) | Granted users |
 | `play <search words>` | Lists the top YouTube results (10 by default, `search_results` in `config.yaml`) | Granted users |
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
