@@ -36,11 +36,5 @@ config.yaml
 cookies.txt
 *cookies*.txt
 
-# Local deploy target (server name/port): never commit
-deploy.local.env
-
-# Deployment scripts for the maintainer's own server: kept local, not published
-/deploy/
-/scripts/deploy.sh
-/scripts/local.sh
-/scripts/vps.sh
+# The maintainer's own server setup and management scripts: kept local, not published
+/vps/
