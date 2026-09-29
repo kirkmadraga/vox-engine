@@ -39,6 +39,7 @@ type Config struct {
 	YtdlpPath          string
 	FfmpegPath         string
 	YtdlpJSRuntime     string
+	YtdlpCookies       string // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
 }
 
 // file mirrors config.yaml. IDs stay strings here and are parsed to snowflakes after decoding.
@@ -55,6 +56,7 @@ type file struct {
 	YtdlpPath          string   `yaml:"ytdlp_path"`
 	FfmpegPath         string   `yaml:"ffmpeg_path"`
 	YtdlpJSRuntime     string   `yaml:"ytdlp_js_runtime"`
+	YtdlpCookies       string   `yaml:"ytdlp_cookies"`
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from path into the process environment.
@@ -117,6 +119,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		YtdlpPath:          f.YtdlpPath,
 		FfmpegPath:         f.FfmpegPath,
 		YtdlpJSRuntime:     f.YtdlpJSRuntime,
+		YtdlpCookies:       strings.TrimSpace(f.YtdlpCookies),
 	}
 	if f.MaxConcurrentJobs != nil {
 		if *f.MaxConcurrentJobs < 1 {

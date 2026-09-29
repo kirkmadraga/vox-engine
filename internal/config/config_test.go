@@ -173,3 +173,13 @@ func TestDefaultTestToneIsCommitted(t *testing.T) {
 		t.Errorf("default test tone missing: %v", err)
 	}
 }
+
+func TestParseCookies(t *testing.T) {
+	cfg, err := Parse([]byte("ytdlp_cookies: \" ./data/cookies.txt \"\n"), env("tok"))
+	if err != nil || cfg.YtdlpCookies != "./data/cookies.txt" {
+		t.Errorf("ytdlp_cookies = %q, %v", cfg.YtdlpCookies, err)
+	}
+	if cfg, _ := Parse([]byte(""), env("tok")); cfg.YtdlpCookies != "" {
+		t.Errorf("default = %q, want none", cfg.YtdlpCookies)
+	}
+}

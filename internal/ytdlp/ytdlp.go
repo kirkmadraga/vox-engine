@@ -35,6 +35,7 @@ type Downloader struct {
 	Path           string        // yt-dlp executable
 	FFmpegLocation string        // optional: ffmpeg binary or its directory
 	JSRuntime      string        // optional: passed as --js-runtimes (e.g. "node")
+	Cookies        string        // optional: Netscape cookies.txt passed as --cookies (yt-dlp also writes it back)
 	MaxDuration    time.Duration // 0 = no limit
 	Timeout        time.Duration // whole download; 0 = DefaultTimeout
 }
@@ -75,6 +76,9 @@ func (d Downloader) Args(id, dir string) []string {
 	if d.JSRuntime != "" {
 		args = append(args, "--js-runtimes", d.JSRuntime)
 	}
+	if d.Cookies != "" {
+		args = append(args, "--cookies", d.Cookies)
+	}
 	return append(args, VideoURL(id))
 }
 
@@ -109,7 +113,11 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 		if errors.Is(err, exec.ErrNotFound) {
 			return Result{}, &Error{Kind: KindMissingTool, Detail: err.Error()}
 		}
-		return Result{}, classify(string(stderr), err)
+		yerr := classify(string(stderr), err)
+		if yerr.Kind == KindBotCheck && d.Cookies != "" {
+			yerr.Detail += " (cookies are configured; they may have expired: re-export them)"
+		}
+		return Result{}, yerr
 	}
 
 	var meta, file string

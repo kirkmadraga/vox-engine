@@ -50,4 +50,7 @@ Checks and builds (vet, race tests, Windows and Linux binaries):
 [deploy/SETUP.md](deploy/SETUP.md).
 
 **Hosting note:** YouTube blocks many datacenter IPs ("Sign in to confirm you're
-not a bot"), even with cookies. A home connection works reliably; a VPS may not.
+not a bot"). A home connection just works; on a VPS, set `ytdlp_cookies` to a
+cookies.txt from a spare Google account (see [deploy/SETUP.md](deploy/SETUP.md)).
+On slow CPUs, yt-dlp's JavaScript challenge solving can take about a minute per
+new video.

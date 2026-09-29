@@ -102,10 +102,14 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		Path:           findTool(logger, "yt-dlp", cfg.YtdlpPath),
 		FFmpegLocation: findTool(logger, "ffmpeg", cfg.FfmpegPath),
 		JSRuntime:      cfg.YtdlpJSRuntime,
+		Cookies:        cfg.YtdlpCookies,
 		MaxDuration:    time.Duration(cfg.MaxDurationSeconds) * time.Second,
 	}
 	if downloader.JSRuntime == "" {
 		logger.Warn("ytdlp_js_runtime is not set; YouTube downloads may fail or miss formats")
+	}
+	if cfg.YtdlpCookies != "" {
+		checkCookies(logger, cfg.YtdlpCookies)
 	}
 	// The queue is created later (it needs the Discord client); until then nothing is queued.
 	var q *queue.Manager
@@ -226,4 +230,17 @@ func findTool(logger *slog.Logger, name, configured string) string {
 	}
 	logger.Info("tool found", "tool", name, "path", path)
 	return path
+}
+
+// checkCookies warns early if yt-dlp's cookies file is missing or read-only
+// (yt-dlp writes refreshed cookies back to it). Only the path is ever logged:
+// the file is a login credential.
+func checkCookies(logger *slog.Logger, path string) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		logger.Error("ytdlp_cookies is set but the file is missing or not writable; downloads may be blocked", "path", path, "err", err)
+		return
+	}
+	f.Close()
+	logger.Info("yt-dlp cookies in use", "path", path)
 }

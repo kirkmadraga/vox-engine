@@ -210,3 +210,29 @@ func TestFetchMetadataEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+func TestCookiesFlagAndExpiryHint(t *testing.T) {
+	args := Downloader{Cookies: "/opt/discord-bot/data/cookies.txt"}.Args(vid, "d")
+	if !containsSeq(args, []string{"--cookies", "/opt/discord-bot/data/cookies.txt"}) {
+		t.Errorf("--cookies missing: %v", args)
+	}
+	if slices.Contains(Downloader{}.Args(vid, "d"), "--cookies") {
+		t.Error("--cookies must be omitted when not configured")
+	}
+
+	botCheck := "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies"
+	withCookies := Downloader{Runner: &fakeRunner{stderr: botCheck, err: exitErr}, Path: "yt-dlp", Cookies: "c.txt"}
+	_, err := withCookies.Fetch(context.Background(), vid, "d")
+	var ye *Error
+	if !errors.As(err, &ye) || ye.Kind != KindBotCheck || !strings.Contains(ye.Detail, "may have expired") {
+		t.Errorf("with cookies: %v", err)
+	}
+	without := Downloader{Runner: &fakeRunner{stderr: botCheck, err: exitErr}, Path: "yt-dlp"}
+	_, err = without.Fetch(context.Background(), vid, "d")
+	if errors.As(err, &ye); strings.Contains(ye.Detail, "expired") {
+		t.Errorf("hint without cookies configured: %v", err)
+	}
+	if strings.Contains(ye.UserMessage(), "cookie") {
+		t.Error("users must not be told about cookies")
+	}
+}
