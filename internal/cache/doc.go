@@ -1,2 +1,3 @@
-// Package cache implements the video-ID-keyed audio cache.
+// Package cache stores downloaded audio as <videoID>.opus, recorded in an Index,
+// with shared downloads, validation before admission, and size/age purging.
 package cache
