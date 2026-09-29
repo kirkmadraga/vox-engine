@@ -278,3 +278,23 @@ func TestParseVoiceAndSearchLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestParseUnauthorizedMessage(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil || cfg.UnauthorizedMessage != DefaultUnauthorizedMessage {
+		t.Errorf("default = %q, %v", cfg.UnauthorizedMessage, err)
+	}
+	cfg, err = Parse([]byte("unauthorized_message: \"  Ask the owner for access.  \"\n"), env(fakeToken))
+	if err != nil || cfg.UnauthorizedMessage != "Ask the owner for access." {
+		t.Errorf("custom = %q, %v", cfg.UnauthorizedMessage, err)
+	}
+	for yaml, want := range map[string]string{
+		"unauthorized_message: \"\"\n":                              "can't be empty",
+		"unauthorized_message: \"   \"\n":                           "can't be empty",
+		"unauthorized_message: " + strings.Repeat("x", 2001) + "\n": "longer than 2000",
+	} {
+		if _, err := Parse([]byte(yaml), env(fakeToken)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want %q", err, want)
+		}
+	}
+}

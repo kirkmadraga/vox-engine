@@ -240,9 +240,20 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	r := router.New(client.ID, registry, policy, logger)
 	client.AddEventListeners(
 		bot.NewListenerFunc(discordio.GuildMessageHandler(ctx, r, client.Rest)),
+		// Slash commands: same router, same access policy as mentions.
+		bot.NewListenerFunc(discordio.SlashCommandHandler(ctx, r, client.Rest, cfg.UnauthorizedMessage, logger)),
 		// Removed from voice by someone else: discard that server's queue.
 		bot.NewListenerFunc(discordio.BotVoiceLeaveHandler(client.ID, func(guildID snowflake.ID) { q.Disconnected(guildID) })),
 	)
+
+	// Replace the registered slash commands with this build's list, so Discord
+	// always matches the code. If it fails, mentions still work.
+	grantable := []string{commands.DefaultGrantCommand} // the rest share play's grant, are public, or owner-only
+	if registered, err := client.Rest.SetGlobalCommands(client.ApplicationID, discordio.SlashCommands(grantable)); err != nil {
+		logger.Warn("couldn't register slash commands; @mentions still work", "err", err)
+	} else {
+		logger.Info("slash commands registered", "count", len(registered))
+	}
 
 	if err := client.OpenGateway(ctx); err != nil {
 		return fmt.Errorf("connect to discord gateway: %w", err)

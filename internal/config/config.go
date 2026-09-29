@@ -25,7 +25,11 @@ const (
 	DefaultYtdlpMinInterval = 30 * time.Second
 	DefaultSearchResults    = 10
 	MaxSearchResults        = 10 // keeps the list within one Discord message
-	DefaultVoiceIdleTimeout = 0 // leave as soon as the queue ends
+	DefaultVoiceIdleTimeout = 0  // leave as soon as the queue ends
+	// DefaultUnauthorizedMessage answers a slash command the user may not run
+	// (only they see it). Mentions from such users still get silence.
+	DefaultUnauthorizedMessage = "You can't use that command here."
+	maxUnauthorizedMessageLen  = 2000 // Discord's message limit
 )
 
 // Config is the validated bot configuration.
@@ -44,6 +48,7 @@ type Config struct {
 	MaxVoiceSessions      int           // servers in voice at the same time
 	VoiceIdleTimeout      time.Duration // how long to stay in voice after the queue ends; 0 = leave at once
 	MaxConcurrentSearches int           // yt-dlp searches at the same time
+	UnauthorizedMessage   string        // private reply to a slash command the user may not run
 	MaxDurationSeconds    int
 	YtdlpPath             string
 	FfmpegPath            string
@@ -66,6 +71,7 @@ type file struct {
 	MaxVoiceSessions      *int     `yaml:"max_voice_sessions"`
 	VoiceIdleTimeout      *string  `yaml:"voice_idle_timeout"`
 	MaxConcurrentSearches *int     `yaml:"max_concurrent_searches"`
+	UnauthorizedMessage   *string  `yaml:"unauthorized_message"`
 	MaxDurationSeconds    int      `yaml:"max_duration_seconds"`
 	YtdlpPath             string   `yaml:"ytdlp_path"`
 	FfmpegPath            string   `yaml:"ffmpeg_path"`
@@ -141,6 +147,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		MaxVoiceSessions:      1,
 		VoiceIdleTimeout:      DefaultVoiceIdleTimeout,
 		MaxConcurrentSearches: 1,
+		UnauthorizedMessage:   DefaultUnauthorizedMessage,
 		MaxDurationSeconds:    f.MaxDurationSeconds,
 		YtdlpPath:             f.YtdlpPath,
 		FfmpegPath:            f.FfmpegPath,
@@ -177,6 +184,16 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("max_concurrent_searches must be at least 1, got %d", *f.MaxConcurrentSearches)
 		}
 		cfg.MaxConcurrentSearches = *f.MaxConcurrentSearches
+	}
+	if f.UnauthorizedMessage != nil {
+		msg := strings.TrimSpace(*f.UnauthorizedMessage)
+		switch {
+		case msg == "":
+			return Config{}, fmt.Errorf("unauthorized_message can't be empty (Discord needs some reply to a slash command); remove it to use the default")
+		case len([]rune(msg)) > maxUnauthorizedMessageLen:
+			return Config{}, fmt.Errorf("unauthorized_message is longer than %d characters", maxUnauthorizedMessageLen)
+		}
+		cfg.UnauthorizedMessage = msg
 	}
 	if f.VoiceIdleTimeout != nil {
 		d, err := time.ParseDuration(strings.TrimSpace(*f.VoiceIdleTimeout))

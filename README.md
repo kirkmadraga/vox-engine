@@ -7,8 +7,11 @@ re-encoding.
 
 ## Commands
 
-Mention the bot, then the command: `@Bot play <link>`, or `@Bot play <search words>` to list the top
-YouTube results and then `@Bot play <number>` to pick one.
+Use a slash command (`/play`, `/queue`, …) or mention the bot, then the command: `@Bot play <link>`,
+or `@Bot play <search words>` to list the top YouTube results and then `@Bot play <number>` to pick
+one. Both work the same way and follow the same access rules; `/allow` and `/deny` take a `guild` or
+`user` subcommand. Someone without access who uses a slash command gets a short reply only they can
+see (`unauthorized_message` in `config.yaml`); a mention from them gets no reply.
 
 | Command | What it does | Who |
 |---|---|---|
@@ -71,8 +74,8 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
 1. Create an application in the [Discord developer portal](https://discord.com/developers/applications),
    copy the bot token from its **Bot** page, and invite the bot with permissions
    `3148800` (View Channel, Send Messages, Connect, Speak):
-   `https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=3148800`.
-   No privileged intents are needed.
+   `https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot+applications.commands&permissions=3148800`.
+   No privileged intents are needed. The bot registers its slash commands itself at startup.
 2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 3. Copy `config.example.yaml` to `config.yaml`, then:
    - put your Discord user ID in `owner_user_ids` (in Discord: Settings →

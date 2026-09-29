@@ -52,13 +52,36 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 		log.Debug("ignored", "reason", reason, "content_len", len(msg.Content))
 		return
 	}
-	log = log.With("command", name)
-	if !r.access.Allowed(ctx, msg.AuthorID, msg.GuildID, name) {
-		log.Debug("ignored", "reason", "not allowed")
+	inv := Invocation{GuildID: msg.GuildID, ChannelID: msg.ChannelID, AuthorID: msg.AuthorID, Name: name, Args: args}
+	if !r.Allowed(ctx, inv) {
 		return // silent: don't advertise the bot to unauthorized users
 	}
+	r.Run(ctx, inv, reply)
+}
 
-	cmd, found := r.registry.Lookup(name)
+// Invocation is one command call, from a mention or a slash command.
+type Invocation struct {
+	GuildID   snowflake.ID
+	ChannelID snowflake.ID
+	AuthorID  snowflake.ID
+	Name      string // lowercased command name
+	Args      string // the command's argument text, as typed after the name
+}
+
+// Allowed applies the access policy to inv (the same for every way in). A
+// refusal is logged at debug level.
+func (r *Router) Allowed(ctx context.Context, inv Invocation) bool {
+	if r.access.Allowed(ctx, inv.AuthorID, inv.GuildID, inv.Name) {
+		return true
+	}
+	r.logger.Debug("ignored", "reason", "not allowed", "user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
+	return false
+}
+
+// Run runs an allowed invocation's command, replying through reply.
+func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier) {
+	log := r.logger.With("user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
+	cmd, found := r.registry.Lookup(inv.Name)
 	if !found {
 		log.Debug("unknown command")
 		if err := reply.Reply(ctx, commands.Reply{Content: "unknown command"}); err != nil {
@@ -69,10 +92,10 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 
 	log.Info("dispatch")
 	err := cmd.Run(ctx, commands.Request{
-		GuildID:   msg.GuildID,
-		ChannelID: msg.ChannelID,
-		AuthorID:  msg.AuthorID,
-		Args:      args,
+		GuildID:   inv.GuildID,
+		ChannelID: inv.ChannelID,
+		AuthorID:  inv.AuthorID,
+		Args:      inv.Args,
 		Reply:     reply,
 	})
 	if err != nil {

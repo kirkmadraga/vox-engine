@@ -18,6 +18,10 @@ search_results: 10            # results listed by "@Bot play <search words>" (1-
 max_voice_sessions: 1         # servers the bot plays in at the same time
 voice_idle_timeout: 0         # stay in voice this long after the queue ends, e.g. 2m (0 = leave at once)
 
+# Reply to a slash command from someone without access; only they see it.
+# (Mentions from them get no reply at all.)
+unauthorized_message: "Sorry, you don't have access to that here. Ask the bot's owner if you'd like it."
+
 # How hard the bot leans on YouTube. Raising these makes a busy bot faster but
 # makes YouTube more likely to block it (or the cookies' account, if used).
 max_concurrent_jobs: 1        # downloads at the same time
