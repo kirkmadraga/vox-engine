@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -279,5 +280,106 @@ func TestTenLongResultsFitOneMessage(t *testing.T) {
 	out := formatResults(hits)
 	if !strings.HasSuffix(out, "To pick one, play its number.") || !strings.Contains(out, "10. ") {
 		t.Errorf("list was cut short (%d chars):\n%s", len(out), out)
+	}
+}
+
+// runLucky runs play with req.Lucky set, as /play lucky:True does.
+func runLucky(t *testing.T, p Play, args string) Reply {
+	t.Helper()
+	rep := &fakeReplier{}
+	if err := p.Run(context.Background(), Request{GuildID: 1, ChannelID: 9, AuthorID: 5, Args: args, Reply: rep, Lucky: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rep.got) != 1 {
+		t.Fatalf("got %d replies, want 1", len(rep.got))
+	}
+	return rep.got[0]
+}
+
+var staySearch = []ytdlp.Hit{
+	{ID: "karaokeaaaa", Title: "Stay Beautiful (Karaoke Version)"},
+	{ID: "liveaaaaaaa", Title: "Taylor Swift - Stay Beautiful (Live)"},
+	{ID: "studioaaaaa", Title: "Taylor Swift - Stay Beautiful", Duration: 237 * time.Second},
+	{ID: "lyricsaaaaa", Title: "Stay Beautiful (Lyrics)"},
+}
+
+func TestLuckyPlaysFirstGoodResult(t *testing.T) {
+	s, q := &fakeSearch{hits: staySearch}, &fakeQueue{}
+	r := runLucky(t, searchPlay(q, s, NewRecentSearches(0, nil)), "taylor swift stay beautiful")
+	if len(q.queued) != 1 || q.queued[0].Key != "studioaaaaa" {
+		t.Fatalf("queued %+v; want the first result that isn't karaoke or live", q.queued)
+	}
+	if r.Content != "Getting **Taylor Swift - Stay Beautiful** ready…" {
+		t.Errorf("reply = %q", r.Content)
+	}
+	if s.n < luckyTop {
+		t.Errorf("lucky searched %d results, want at least %d", s.n, luckyTop)
+	}
+}
+
+func TestLuckyRespectsWhatWasAskedFor(t *testing.T) {
+	s, q := &fakeSearch{hits: staySearch}, &fakeQueue{}
+	runLucky(t, searchPlay(q, s, NewRecentSearches(0, nil)), "stay beautiful karaoke")
+	if len(q.queued) != 1 || q.queued[0].Key != "karaokeaaaa" {
+		t.Errorf("queued %+v; asking for karaoke must accept the karaoke result", q.queued)
+	}
+}
+
+func TestLuckyWithOnlyOtherVersionsLists(t *testing.T) {
+	s, q := &fakeSearch{hits: staySearch[:2]}, &fakeQueue{}
+	recent := NewRecentSearches(0, nil)
+	r := runLucky(t, searchPlay(q, s, recent), "stay beautiful")
+	if len(q.queued) != 0 {
+		t.Errorf("queued %+v, want nothing", q.queued)
+	}
+	if !strings.HasPrefix(r.Content, "The top results all look like covers, live versions or similar, so pick one:\n1. ") {
+		t.Errorf("reply = %q", r.Content)
+	}
+	if hits, ok := recent.Get(1, 5); !ok || len(hits) != 2 {
+		t.Errorf("the list must be pickable: %+v, %v", hits, ok)
+	}
+}
+
+// Lucky only considers the top luckyTop results.
+func TestLuckyIgnoresResultsBelowTheTop(t *testing.T) {
+	var hits []ytdlp.Hit
+	for i := range luckyTop {
+		hits = append(hits, ytdlp.Hit{ID: fmt.Sprintf("cover%06d", i), Title: "Song (Cover)"})
+	}
+	hits = append(hits, ytdlp.Hit{ID: "latestudio1", Title: "Song"})
+	q := &fakeQueue{}
+	runLucky(t, searchPlay(q, &fakeSearch{hits: hits}, NewRecentSearches(0, nil)), "song")
+	if len(q.queued) != 0 {
+		t.Errorf("queued %+v; a result below the top %d must not be picked", q.queued, luckyTop)
+	}
+}
+
+func TestLuckyNeedsVoiceBeforeSearching(t *testing.T) {
+	s := &fakeSearch{hits: staySearch}
+	p := Play{Voice: fakeLocator{}, Queue: &fakeQueue{}, YouTube: loaderFor, Search: s.SearchN, Results: 7, Recent: NewRecentSearches(0, nil)}
+	if r := runLucky(t, p, "stay beautiful"); !strings.Contains(r.Content, "Join a voice channel first") || len(s.queries) != 0 {
+		t.Errorf("reply %q, searched %q", r.Content, s.queries)
+	}
+}
+
+// Lucky changes nothing for links, numbers or Spotify links.
+func TestLuckyIgnoredForLinksAndNumbers(t *testing.T) {
+	recent := NewRecentSearches(0, nil)
+	recent.Put(1, 5, threeHits)
+	for args, key := range map[string]string{"https://youtu.be/dQw4w9WgXcQ": "dQw4w9WgXcQ", "2": "jNQXAC9IVRw"} {
+		s, q := &fakeSearch{}, &fakeQueue{}
+		runLucky(t, searchPlay(q, s, recent), args)
+		if len(s.queries) != 0 || len(q.queued) != 1 || q.queued[0].Key != key {
+			t.Errorf("%q: searched %q, queued %+v", args, s.queries, q.queued)
+		}
+	}
+}
+
+// Without lucky (every @mention), search words still just list results.
+func TestNotLuckyStillLists(t *testing.T) {
+	s, q := &fakeSearch{hits: staySearch}, &fakeQueue{}
+	r := runCmd(t, searchPlay(q, s, NewRecentSearches(0, nil)), "taylor swift stay beautiful")
+	if len(q.queued) != 0 || !strings.HasPrefix(r.Content, "1. ") || s.n != 7 {
+		t.Errorf("queued %+v, reply %q, searched %d", q.queued, r.Content, s.n)
 	}
 }

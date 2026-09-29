@@ -171,7 +171,11 @@ type recordCmd struct {
 
 func (c recordCmd) Name() string { return c.name }
 func (c recordCmd) Run(ctx context.Context, req commands.Request) error {
-	*c.log = append(*c.log, "run "+c.name+" "+req.Args)
+	entry := "run " + c.name + " " + req.Args
+	if req.Lucky {
+		entry += " [lucky]"
+	}
+	*c.log = append(*c.log, entry)
 	for i := range c.replies {
 		req.Reply.Reply(ctx, commands.Reply{Content: fmt.Sprintf("%s reply %d @everyone", c.name, i+1)})
 	}
@@ -373,5 +377,50 @@ func TestSlashOutsideServersAndUnknown(t *testing.T) {
 	ev, _ := e.slash(owner, allowedG, simpleData("nope"))
 	if len(ev.private) != 1 || ev.private[0].Content != "unknown command" {
 		t.Errorf("unknown: %+v", ev.private)
+	}
+}
+
+func luckyPlayData(query string, lucky bool) string {
+	q, _ := json.Marshal(query)
+	return fmt.Sprintf(`{"id":"1","name":"play","type":1,"options":[{"name":"query","type":3,"value":%s},{"name":"lucky","type":5,"value":%v}]}`, q, lucky)
+}
+
+// /play's lucky option reaches the command; leaving it out, or a mention,
+// never sets it (mentions have no such option, and "--lucky" is just text).
+func TestLuckyOnlyFromTheSlashOption(t *testing.T) {
+	e := newSlashE2E(t)
+	cases := map[string]string{
+		luckyPlayData("stay beautiful", true):  "run play stay beautiful [lucky]",
+		luckyPlayData("stay beautiful", false): "run play stay beautiful",
+		playData("stay beautiful"):             "run play stay beautiful",
+	}
+	for raw, want := range cases {
+		e.slash(owner, allowedG, raw)
+		if !slices.Contains(e.log, want) {
+			t.Errorf("%s: events %q, want %q", raw, e.log, want)
+		}
+	}
+	e.log = nil
+	e.router.Handle(context.Background(), router.Message{GuildID: allowedG, ChannelID: 1, AuthorID: owner, Content: "<@1000> play --lucky stay beautiful"}, &mentionReplier{})
+	if !slices.Equal(e.log, []string{"run play --lucky stay beautiful"}) {
+		t.Errorf("mention: events %q; a mention must never be lucky", e.log)
+	}
+	// Only /play reads it.
+	e.slash(owner, allowedG, `{"id":"1","name":"queue","type":1,"options":[{"name":"lucky","type":5,"value":true}]}`)
+	if !slices.Contains(e.log, "run queue ") {
+		t.Errorf("queue: events %q", e.log)
+	}
+}
+
+func TestPlayLuckyOptionIsOptional(t *testing.T) {
+	for _, c := range SlashCommands([]string{"play"}) {
+		s := c.(discord.SlashCommandCreate)
+		if s.Name != "play" {
+			continue
+		}
+		lucky, ok := s.Options[1].(discord.ApplicationCommandOptionBool)
+		if !ok || lucky.Name != "lucky" || lucky.Required {
+			t.Errorf("/play's second option = %+v; want an optional boolean named lucky", s.Options[1])
+		}
 	}
 }

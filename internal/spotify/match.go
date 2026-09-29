@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kirkmadraga/vox-engine/internal/titles"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
@@ -37,13 +38,6 @@ const (
 	maxLength   = 15 * time.Second // beyond this, a result is ruled out
 )
 
-// rejectWords mark a different recording than the Spotify track, unless the
-// Spotify title itself contains them.
-var rejectWords = []string{
-	"cover", "karaoke", "instrumental", "backing track", "remix", "live",
-	"sped up", "slowed", "nightcore", "8d", "reverb", "acapella", "a cappella",
-}
-
 // Best picks the regular YouTube result most likely to be the track, or
 // reports false if none is a confident match.
 func Best(t Track, hits []ytdlp.Hit) (ytdlp.Hit, bool) {
@@ -71,12 +65,10 @@ func Score(t Track, h ytdlp.Hit) (score int, ok bool) {
 		return 0, false
 	}
 
-	title, spotifyTitle := normalize(h.Title), normalize(t.Title)
-	for _, w := range rejectWords {
-		if hasWord(title, w) && !hasWord(spotifyTitle, w) {
-			return 0, false
-		}
+	if titles.OtherVersion(h.Title, t.Title) { // cover, karaoke, live... unless Spotify's title says so
+		return 0, false
 	}
+	title := normalize(h.Title)
 	if core := coreTitle(t.Title); core != "" && strings.Contains(title, core) {
 		score += 2
 	}
@@ -95,11 +87,6 @@ func Score(t Track, h ytdlp.Hit) (score int, ok bool) {
 	return score, true
 }
 
-// normalize lowercases and collapses whitespace.
-func normalize(s string) string {
-	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
-}
-
 var bracketed = regexp.MustCompile(`\s*[(\[][^)\]]*[)\]]`)
 
 // coreTitle drops bracketed parts ("(feat. X)", "[Remastered]") and anything
@@ -110,21 +97,5 @@ func coreTitle(s string) string {
 	return normalize(s)
 }
 
-// hasWord reports whether phrase w appears in s as whole words.
-func hasWord(s, w string) bool {
-	for i := 0; ; {
-		j := strings.Index(s[i:], w)
-		if j < 0 {
-			return false
-		}
-		start, end := i+j, i+j+len(w)
-		if (start == 0 || !isWordByte(s[start-1])) && (end == len(s) || !isWordByte(s[end])) {
-			return true
-		}
-		i = start + 1
-	}
-}
-
-func isWordByte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
-}
+// normalize lowercases and collapses whitespace.
+func normalize(s string) string { return titles.Normalize(s) }

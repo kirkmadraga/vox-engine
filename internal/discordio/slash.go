@@ -65,6 +65,7 @@ func SlashCommands(grantable []string) []discord.ApplicationCommandCreate {
 			Contexts:    guildOnly,
 			Options: []discord.ApplicationCommandOption{
 				discord.ApplicationCommandOptionString{Name: "query", Description: "YouTube link, Spotify link, search term, or search result number", Required: true},
+				discord.ApplicationCommandOptionBool{Name: "lucky", Description: "For a search term: play the first good result instead of listing them"},
 			},
 		},
 		simple("test", "Play a short test tone"),
@@ -202,6 +203,9 @@ func handleSlash(base context.Context, r *router.Router, responder InteractionRe
 		return
 	}
 	inv := router.Invocation{GuildID: *guildID, ChannelID: e.channelID(), AuthorID: e.userID(), Name: data.CommandName(), Args: args}
+	if inv.Name == "play" {
+		inv.Lucky, _ = data.OptBool("lucky")
+	}
 
 	ctx, cancel := context.WithTimeout(base, handleTimeout)
 	defer cancel()

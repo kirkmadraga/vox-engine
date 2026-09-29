@@ -66,6 +66,7 @@ type Invocation struct {
 	AuthorID  snowflake.ID
 	Name      string // lowercased command name
 	Args      string // the command's argument text, as typed after the name
+	Lucky     bool   // /play's lucky option (slash only; see commands.Request)
 }
 
 // Allowed applies the access policy to inv (the same for every way in). A
@@ -97,6 +98,7 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 		AuthorID:  inv.AuthorID,
 		Args:      inv.Args,
 		Reply:     reply,
+		Lucky:     inv.Lucky,
 	})
 	if err != nil {
 		log.Error("command failed", "err", err)

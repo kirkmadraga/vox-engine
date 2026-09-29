@@ -11,6 +11,7 @@ import (
 
 	"github.com/kirkmadraga/vox-engine/internal/queue"
 	"github.com/kirkmadraga/vox-engine/internal/spotify"
+	"github.com/kirkmadraga/vox-engine/internal/titles"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
@@ -68,7 +69,15 @@ func (c Play) Run(ctx context.Context, req Request) error {
 	}
 
 	// Search words: list the results; nothing is queued until "play <number>".
-	hits, err := c.Search(ctx, req.Args, c.Results)
+	// With /play's lucky option, the first good result is queued instead.
+	n := c.Results
+	if req.Lucky {
+		if _, ok := c.Voice.UserVoiceChannel(req.GuildID, req.AuthorID); !ok {
+			return reply(ctx, req, "Join a voice channel first, then try again.") // before searching
+		}
+		n = max(n, luckyTop)
+	}
+	hits, err := c.Search(ctx, req.Args, n)
 	if err == nil && len(hits) == 0 {
 		err = ytdlp.ErrNoResults
 	}
@@ -76,7 +85,31 @@ func (c Play) Run(ctx context.Context, req Request) error {
 		return searchFailed(ctx, req, err)
 	}
 	c.Recent.Put(req.GuildID, req.AuthorID, hits)
+	if req.Lucky {
+		if h, ok := luckyPick(hits, req.Args); ok {
+			return c.enqueueVideo(ctx, req, h)
+		}
+		msg := "The top results all look like covers, live versions or similar, so pick one:\n" + formatResults(hits)
+		return reply(ctx, req, "%s", truncate(msg, maxMessageLen))
+	}
 	return reply(ctx, req, "%s", formatResults(hits))
+}
+
+// luckyTop is how many top results "lucky" considers.
+const luckyTop = 5
+
+// luckyPick returns the first of the top luckyTop results that isn't a
+// different version (cover, karaoke, live...) than the search asked for.
+func luckyPick(hits []ytdlp.Hit, query string) (ytdlp.Hit, bool) {
+	for i, h := range hits {
+		if i == luckyTop {
+			break
+		}
+		if !titles.OtherVersion(h.Title, query) {
+			return h, true
+		}
+	}
+	return ytdlp.Hit{}, false
 }
 
 // pick queues result n from the caller's last search.

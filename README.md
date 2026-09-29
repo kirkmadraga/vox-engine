@@ -10,7 +10,8 @@ re-encoding.
 Use a slash command (`/play`, `/queue`, …) or mention the bot, then the command: `@Bot play <link>`,
 or `@Bot play <search words>` to list the top YouTube results and then `@Bot play <number>` to pick
 one. Both work the same way and follow the same access rules; `/allow` and `/deny` take a `guild` or
-`user` subcommand. Someone without access who uses a slash command gets a short reply only they can
+`user` subcommand. `/play` also has an optional `lucky` switch: with search words, it plays the first
+result that isn't a cover, karaoke or live version (unless you asked for one) instead of listing them. Someone without access who uses a slash command gets a short reply only they can
 see (`unauthorized_message` in `config.yaml`); a mention from them gets no reply.
 
 | Command | What it does | Who |

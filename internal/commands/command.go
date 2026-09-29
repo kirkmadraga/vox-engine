@@ -21,6 +21,9 @@ type Request struct {
 	AuthorID  snowflake.ID
 	Args      string // text after the command word, trimmed
 	Reply     Replier
+	// Lucky is /play's "lucky" option: play a search's first good result
+	// instead of listing them. Slash-only; mentions never set it.
+	Lucky bool
 }
 
 // Reply is an outgoing message. Only the users in Mentions are pinged;
