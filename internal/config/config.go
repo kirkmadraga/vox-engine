@@ -23,6 +23,8 @@ const (
 	DefaultCacheMaxAge      = 12 * time.Hour
 	DefaultTestTone         = "assets/tone.opus" // committed with the code
 	DefaultYtdlpMinInterval = 30 * time.Second
+	DefaultSearchResults    = 10
+	MaxSearchResults        = 10 // keeps the list within one Discord message
 )
 
 // Config is the validated bot configuration.
@@ -37,6 +39,7 @@ type Config struct {
 	TestTone           string        // Ogg Opus file played by "test"
 	MaxConcurrentJobs  int
 	MaxQueueLength     int // per server, including the playing track
+	SearchResults      int // how many results "play <search words>" lists
 	MaxDurationSeconds int
 	YtdlpPath          string
 	FfmpegPath         string
@@ -55,6 +58,7 @@ type file struct {
 	TestTone           string   `yaml:"test_tone"`
 	MaxConcurrentJobs  *int     `yaml:"max_concurrent_jobs"`
 	MaxQueueLength     *int     `yaml:"max_queue_length"`
+	SearchResults      *int     `yaml:"search_results"`
 	MaxDurationSeconds int      `yaml:"max_duration_seconds"`
 	YtdlpPath          string   `yaml:"ytdlp_path"`
 	FfmpegPath         string   `yaml:"ffmpeg_path"`
@@ -126,6 +130,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		TestTone:           valueOr(f.TestTone, DefaultTestTone),
 		MaxConcurrentJobs:  1,
 		MaxQueueLength:     DefaultMaxQueueLength,
+		SearchResults:      DefaultSearchResults,
 		MaxDurationSeconds: f.MaxDurationSeconds,
 		YtdlpPath:          f.YtdlpPath,
 		FfmpegPath:         f.FfmpegPath,
@@ -144,6 +149,12 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("max_queue_length must be at least 1, got %d", *f.MaxQueueLength)
 		}
 		cfg.MaxQueueLength = *f.MaxQueueLength
+	}
+	if f.SearchResults != nil {
+		if n := *f.SearchResults; n < 1 || n > MaxSearchResults {
+			return Config{}, fmt.Errorf("search_results must be 1 to %d, got %d", MaxSearchResults, n)
+		}
+		cfg.SearchResults = *f.SearchResults
 	}
 	if f.CacheMaxBytes != nil {
 		if *f.CacheMaxBytes < 0 {

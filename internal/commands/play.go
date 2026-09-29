@@ -28,30 +28,87 @@ type Queue interface {
 	List(guildID snowflake.ID) queue.Listing
 }
 
-// Play is "@Bot play <YouTube link>".
+// Play is "@Bot play <YouTube link | search words | number>". Links are played
+// directly. Search words list the top YouTube results, remembered for the
+// caller; "play <number>" then queues one of them.
 type Play struct {
 	Voice   VoiceLocator
 	Queue   Queue
-	YouTube func(videoID string) queue.LoadFunc // loads a video through the cache
+	YouTube func(videoID string) queue.LoadFunc                                 // loads a video through the cache
+	Search  func(ctx context.Context, query string, n int) ([]ytdlp.Hit, error) // top YouTube results; nil = links only
+	Results int                                                                 // how many results search words list
+	Recent  *RecentSearches                                                     // each caller's last results, for "play <number>"
 }
 
 func (Play) Name() string { return "play" }
 
 func (c Play) Run(ctx context.Context, req Request) error {
 	if req.Args == "" {
-		return reply(ctx, req, "Usage: `play <YouTube link>`")
+		return reply(ctx, req, "Usage: `play <YouTube link or search words>`, then `play <number>` to pick a result")
+	}
+	if n, ok := parsePick(req.Args); ok {
+		return c.pick(ctx, req, n)
 	}
 	id, err := ytdlp.ParseVideoID(req.Args)
 	switch {
+	case err == nil:
+		return c.enqueueVideo(ctx, req, ytdlp.Hit{ID: id})
 	case errors.Is(err, ytdlp.ErrPlaylist):
 		return reply(ctx, req, "Playlists aren't supported, only single videos.")
-	case err != nil:
+	case ytdlp.LooksLikeLink(req.Args), c.Search == nil, c.Recent == nil:
 		return reply(ctx, req, "That doesn't look like a YouTube video link.")
 	}
+
+	// Search words: list the results; nothing is queued until "play <number>".
+	hits, err := c.Search(ctx, req.Args, c.Results)
+	if err == nil && len(hits) == 0 {
+		err = ytdlp.ErrNoResults
+	}
+	if err != nil {
+		return searchFailed(ctx, req, err)
+	}
+	c.Recent.Put(req.GuildID, req.AuthorID, hits)
+	return reply(ctx, req, "%s", formatResults(hits))
+}
+
+// pick queues result n from the caller's last search.
+func (c Play) pick(ctx context.Context, req Request, n int) error {
+	var hits []ytdlp.Hit
+	ok := false
+	if c.Recent != nil {
+		hits, ok = c.Recent.Get(req.GuildID, req.AuthorID)
+	}
+	switch {
+	case !ok:
+		return reply(ctx, req, "No recent search to pick from. Use `play <search words>` first, then `play <number>`.")
+	case n < 1 || n > len(hits):
+		return reply(ctx, req, "Pick a number from 1 to %d.", len(hits))
+	}
+	return c.enqueueVideo(ctx, req, hits[n-1])
+}
+
+// parsePick reads "play <number>": one to three ASCII digits, nothing else.
+func parsePick(s string) (int, bool) {
+	if len(s) == 0 || len(s) > 3 {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}
+
+func (c Play) enqueueVideo(ctx context.Context, req Request, v ytdlp.Hit) error {
 	return enqueue(ctx, req, c.Voice, c.Queue, queue.Track{
-		Key:  id,
-		URL:  "https://youtu.be/" + id,
-		Load: c.YouTube(id),
+		Key:      v.ID,
+		URL:      "https://youtu.be/" + v.ID,
+		Title:    v.Title,
+		Duration: v.Duration,
+		Load:     c.YouTube(v.ID),
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // URL parsing errors, phrased for users.
@@ -22,6 +23,18 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 // VideoURL is the canonical URL for id. Only this, never user text, is passed
 // to yt-dlp.
 func VideoURL(id string) string { return "https://www.youtube.com/watch?v=" + id }
+
+// LooksLikeLink reports whether raw is meant as a link rather than search
+// words: it has a scheme, mentions a YouTube domain, or is a single word with
+// a dot and a slash (e.g. "vimeo.com/1").
+func LooksLikeLink(raw string) bool {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.Contains(s, "://"), strings.Contains(s, "youtube.com"), strings.Contains(s, "youtu.be"):
+		return true
+	}
+	return !strings.ContainsFunc(s, unicode.IsSpace) && strings.Contains(s, ".") && strings.Contains(s, "/")
+}
 
 // ParseVideoID extracts the video ID from a YouTube link. Accepted forms:
 // youtu.be/<id>, youtube.com/watch?v=<id>, youtube.com/shorts/<id>, on the

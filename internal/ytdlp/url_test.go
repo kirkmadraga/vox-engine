@@ -67,3 +67,24 @@ func TestValidID(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikeLink(t *testing.T) {
+	for in, want := range map[string]bool{
+		"https://vimeo.com/1":            true,
+		"vimeo.com/1":                    true,
+		"youtube.com/watch?v=bad":        true,
+		"YouTube.com":                    true,
+		"youtu.be":                       true,
+		"<https://youtu.be/jNQXAC9IVRw>": true,
+		"ftp://example.org":              true,
+		"never gonna give you up":        false,
+		"AC/DC":                          false,
+		"Mr. Blue Sky":                   false,
+		"daft punk - one more time":      false,
+		"lo-fi beats 24/7 vol. 2":        false,
+	} {
+		if got := LooksLikeLink(in); got != want {
+			t.Errorf("LooksLikeLink(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

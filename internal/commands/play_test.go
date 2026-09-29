@@ -92,7 +92,7 @@ func TestPlayReplies(t *testing.T) {
 		args string
 		want string
 	}{
-		{"no link", &fakeQueue{}, "", "Usage: `play <YouTube link>`"},
+		{"no link", &fakeQueue{}, "", "Usage: `play <YouTube link or search words>`"},
 		{"not youtube", &fakeQueue{}, "https://vimeo.com/1", "That doesn't look like a YouTube video link."},
 		{"playlist", &fakeQueue{}, "https://www.youtube.com/playlist?list=PLx", "Playlists aren't supported"},
 		{"queued behind", &fakeQueue{pos: queue.Position{Ahead: 2}}, "youtu.be/jNQXAC9IVRw", "Queued <https://youtu.be/jNQXAC9IVRw> (2 ahead of it)."},
@@ -107,6 +107,59 @@ func TestPlayReplies(t *testing.T) {
 				t.Errorf("reply = %q, want containing %q", r.Content, c.want)
 			}
 		})
+	}
+}
+
+// Every YouTube link form goes to the link handler and never reaches search.
+func TestPlayLinksNeverSearch(t *testing.T) {
+	links := []string{
+		"https://www.youtube.com/watch?v=jNQXAC9IVRw",
+		"http://youtube.com/watch?v=jNQXAC9IVRw&t=5",
+		"youtube.com/watch?v=jNQXAC9IVRw",
+		"www.youtube.com/watch?v=jNQXAC9IVRw",
+		"https://m.youtube.com/watch?v=jNQXAC9IVRw",
+		"https://music.youtube.com/watch?v=jNQXAC9IVRw",
+		"https://www.youtube.com/watch?v=jNQXAC9IVRw&list=PLx",
+		"https://youtube.com/shorts/jNQXAC9IVRw",
+		"https://youtu.be/jNQXAC9IVRw",
+		"https://youtu.be/jNQXAC9IVRw?si=abc",
+		"youtu.be/jNQXAC9IVRw",
+		"<https://youtu.be/jNQXAC9IVRw>",
+		"HTTPS://YOUTU.BE/jNQXAC9IVRw",
+	}
+	for _, link := range links {
+		s, q := &fakeSearch{}, &fakeQueue{}
+		r := runCmd(t, searchPlay(q, s, NewRecentSearches(0, nil)), link)
+		if len(s.queries) != 0 {
+			t.Errorf("%q was searched", link)
+		}
+		if len(q.queued) != 1 || q.queued[0].Key != "jNQXAC9IVRw" {
+			t.Errorf("%q: queued %+v, reply %q", link, q.queued, r.Content)
+		}
+	}
+}
+
+// Broken or non-YouTube links are rejected, not searched.
+func TestPlayBadLinksNeverSearch(t *testing.T) {
+	cases := map[string]string{
+		"https://www.youtube.com/playlist?list=PLx": "Playlists aren't supported",
+		"https://www.youtube.com/watch?v=short":     "doesn't look like a YouTube video link",
+		"youtube.com/watch":                         "doesn't look like a YouTube video link",
+		"https://youtu.be/":                         "doesn't look like a YouTube video link",
+		"youtu.be/not-an-id":                        "doesn't look like a YouTube video link",
+		"https://www.youtube.com/@channel":          "doesn't look like a YouTube video link",
+		"https://vimeo.com/1":                       "doesn't look like a YouTube video link",
+		"vimeo.com/1":                               "doesn't look like a YouTube video link",
+	}
+	for link, want := range cases {
+		s, q := &fakeSearch{}, &fakeQueue{}
+		r := runCmd(t, searchPlay(q, s, NewRecentSearches(0, nil)), link)
+		if len(s.queries) != 0 || len(q.queued) != 0 {
+			t.Errorf("%q: searched %v, queued %+v", link, s.queries, q.queued)
+		}
+		if !strings.Contains(r.Content, want) {
+			t.Errorf("%q: reply = %q, want containing %q", link, r.Content, want)
+		}
 	}
 }
 

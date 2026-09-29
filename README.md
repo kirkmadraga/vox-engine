@@ -7,12 +7,15 @@ re-encoding.
 
 ## Commands
 
-Mention the bot, then the command: `@Bot play <link>`.
+Mention the bot, then the command: `@Bot play <link>`, or `@Bot play <search words>` to list the top
+YouTube results and then `@Bot play <number>` to pick one.
 
 | Command | What it does | Who |
 |---|---|---|
 | `ping` | Replies "@you pong" | Anyone, in allowed servers |
 | `play <YouTube link>` | Adds the track to this server's queue and joins your voice channel | Granted users |
+| `play <search words>` | Lists the top YouTube results (10 by default, `search_results` in `config.yaml`) | Granted users |
+| `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |

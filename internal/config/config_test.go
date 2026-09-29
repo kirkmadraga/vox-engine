@@ -28,6 +28,7 @@ owner_user_ids:
 cache_dir: ./audio
 max_concurrent_jobs: 2
 max_queue_length: 25
+search_results: 7
 `
 	cfg, err := Parse([]byte(yaml), env(fakeToken))
 	if err != nil {
@@ -37,7 +38,7 @@ max_queue_length: 25
 	if len(cfg.OwnerIDs) != 2 || cfg.OwnerIDs[0] != want[0] || cfg.OwnerIDs[1] != want[1] {
 		t.Errorf("OwnerIDs = %v, want %v", cfg.OwnerIDs, want)
 	}
-	if cfg.Token != fakeToken || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 {
+	if cfg.Token != fakeToken || cfg.CacheDir != "./audio" || cfg.MaxConcurrentJobs != 2 || cfg.MaxQueueLength != 25 || cfg.SearchResults != 7 {
 		t.Errorf("unexpected cfg: %+v", cfg)
 	}
 	if cfg.Database != "data/bot.db" || cfg.CacheMaxBytes != 512<<20 || cfg.CacheMaxAge != 12*time.Hour {
@@ -60,7 +61,7 @@ func TestParseOwnerListsEmptyOrMissing(t *testing.T) {
 			if len(cfg.OwnerIDs) != 0 {
 				t.Errorf("OwnerIDs = %v, want empty", cfg.OwnerIDs)
 			}
-			if cfg.MaxConcurrentJobs != 1 || cfg.CacheDir != "cache" || cfg.MaxQueueLength != DefaultMaxQueueLength {
+			if cfg.MaxConcurrentJobs != 1 || cfg.CacheDir != "cache" || cfg.MaxQueueLength != DefaultMaxQueueLength || cfg.SearchResults != DefaultSearchResults {
 				t.Errorf("defaults not applied: %+v", cfg)
 			}
 		})
@@ -89,6 +90,8 @@ func TestParseErrors(t *testing.T) {
 		"unknown key":        {"owner_ids: []\n", fakeToken, "owner_ids"},
 		"bad jobs":           {"max_concurrent_jobs: 0\n", fakeToken, "max_concurrent_jobs"},
 		"bad queue length":   {"max_queue_length: 0\n", fakeToken, "max_queue_length"},
+		"zero results":       {"search_results: 0\n", fakeToken, "search_results"},
+		"too many results":   {"search_results: 11\n", fakeToken, "search_results"},
 		"negative cache cap": {"cache_max_bytes: -1\n", fakeToken, "cache_max_bytes"},
 		"bad cache age":      {"cache_max_age: soon\n", fakeToken, "cache_max_age"},
 		"negative cache age": {"cache_max_age: -1h\n", fakeToken, "cache_max_age"},

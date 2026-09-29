@@ -105,6 +105,12 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		Cookies:        cfg.YtdlpCookies,
 		MaxDuration:    time.Duration(cfg.MaxDurationSeconds) * time.Second,
 	}
+	searcher := &ytdlp.Searcher{
+		Runner:    downloader.Runner,
+		Path:      downloader.Path,
+		JSRuntime: downloader.JSRuntime,
+		Cookies:   downloader.Cookies,
+	}
 	if downloader.JSRuntime == "" {
 		logger.Warn("ytdlp_js_runtime is not set; YouTube downloads may fail or miss formats")
 	}
@@ -177,12 +183,14 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	})
 	voiceStates := discordio.VoiceStates{Caches: client.Caches}
 
+	recent := commands.NewRecentSearches(0, nil) // per-user results for "play <number>"
+
 	// Allow validates command names against the registry it is part of.
 	var registry *commands.Registry
 	known := func(name string) bool { _, ok := registry.Lookup(name); return ok }
 	registry, err = commands.NewRegistry(
 		commands.Ping{},
-		commands.Play{Voice: voiceStates, Queue: q, YouTube: youtube},
+		commands.Play{Voice: voiceStates, Queue: q, YouTube: youtube, Search: searcher.SearchN, Results: cfg.SearchResults, Recent: recent},
 		commands.Test{Voice: voiceStates, Queue: q, Tone: tone},
 		commands.QueueList{Queue: q},
 		commands.Skip{Queue: q},
