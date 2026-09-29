@@ -58,6 +58,7 @@ func (d Downloader) Args(id, dir string) []string {
 		"--no-mtime",
 		"--socket-timeout", "20",
 		"--retries", "2",
+		"--sleep-requests", "1", // pause between yt-dlp's own requests: gentler on YouTube
 		"-f", "bestaudio[acodec=opus]/bestaudio",
 		"-x", "--audio-format", "opus",
 		"--paths", dir,

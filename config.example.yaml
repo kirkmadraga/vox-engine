@@ -13,6 +13,7 @@ cache_max_age: 12h            # delete audio not played for this long (0 = never
 max_concurrent_jobs: 1
 max_duration_seconds: 0     # 0 = no limit
 max_queue_length: 10        # tracks per server, including the one playing
+ytdlp_min_interval: 30s     # at least this long between YouTube downloads (0 = none)
 test_tone: ./assets/tone.opus  # played by "@Bot test"; committed with the code
 
 # Optional overrides; otherwise found on PATH.

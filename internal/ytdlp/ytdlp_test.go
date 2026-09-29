@@ -47,6 +47,7 @@ func TestFetchSuccess(t *testing.T) {
 	}
 	for _, want := range [][]string{
 		{"--no-playlist"},
+		{"--sleep-requests", "1"},
 		{"-x", "--audio-format", "opus"},
 		{"-f", "bestaudio[acodec=opus]/bestaudio"},
 		{"--paths", "/tmp/dl"},

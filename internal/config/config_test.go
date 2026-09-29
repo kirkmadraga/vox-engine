@@ -183,3 +183,21 @@ func TestParseCookies(t *testing.T) {
 		t.Errorf("default = %q, want none", cfg.YtdlpCookies)
 	}
 }
+
+func TestParseYtdlpMinInterval(t *testing.T) {
+	for yaml, want := range map[string]time.Duration{
+		"":                            30 * time.Second, // default
+		"ytdlp_min_interval: 45s\n":   45 * time.Second,
+		"ytdlp_min_interval: \"0\"\n": 0,
+	} {
+		cfg, err := Parse([]byte(yaml), env("tok"))
+		if err != nil || cfg.YtdlpMinInterval != want {
+			t.Errorf("%q: got %v, %v; want %v", yaml, cfg.YtdlpMinInterval, err, want)
+		}
+	}
+	for _, bad := range []string{"ytdlp_min_interval: soon\n", "ytdlp_min_interval: -5s\n"} {
+		if _, err := Parse([]byte(bad), env("tok")); err == nil || !strings.Contains(err.Error(), "ytdlp_min_interval") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+}

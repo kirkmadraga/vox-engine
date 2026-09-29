@@ -50,6 +50,12 @@ type Cache struct {
 	maxAge   time.Duration
 	inUse    func() map[string]bool
 	now      func() time.Time
+	sleep    func(ctx context.Context, d time.Duration) error
+
+	// Downloads start at least minInterval apart, to stay polite to YouTube.
+	minInterval time.Duration
+	startMu     sync.Mutex
+	lastStart   time.Time
 
 	mu       sync.Mutex
 	inflight map[string]*download
@@ -67,14 +73,16 @@ type download struct {
 // Options configures a Cache.
 type Options struct {
 	Fetcher       Fetcher
-	Index         Index                   // required
-	Validate      func(path string) error // checks a downloaded file before it is admitted; may be nil
-	MaxDownloads  int                     // concurrent downloads; <1 means 1
-	MaxBytes      int64                   // total size cap; 0 = none
-	MaxAge        time.Duration           // delete entries unused for this long; 0 = never
-	InUse         func() map[string]bool  // video IDs queued or playing; never purged. May be nil.
-	PurgeInterval time.Duration           // how often MaxAge is enforced; 0 = DefaultPurgeInterval
-	Now           func() time.Time        // nil = time.Now
+	Index         Index                                            // required
+	Validate      func(path string) error                          // checks a downloaded file before it is admitted; may be nil
+	MaxDownloads  int                                              // concurrent downloads; <1 means 1
+	MaxBytes      int64                                            // total size cap; 0 = none
+	MaxAge        time.Duration                                    // delete entries unused for this long; 0 = never
+	InUse         func() map[string]bool                           // video IDs queued or playing; never purged. May be nil.
+	PurgeInterval time.Duration                                    // how often MaxAge is enforced; 0 = DefaultPurgeInterval
+	Now           func() time.Time                                 // nil = time.Now
+	MinInterval   time.Duration                                    // minimum time between download starts; 0 = none
+	Sleep         func(ctx context.Context, d time.Duration) error // nil = real timer (tests inject a fake)
 	Logger        *slog.Logger
 }
 
@@ -104,13 +112,19 @@ func New(base context.Context, dir string, opts Options) (*Cache, error) {
 		maxAge:   opts.MaxAge,
 		inUse:    opts.InUse,
 		now:      opts.Now,
+		sleep:    opts.Sleep,
 		inflight: map[string]*download{},
+
+		minInterval: opts.MinInterval,
 	}
 	if c.logger == nil {
 		c.logger = slog.New(slog.DiscardHandler)
 	}
 	if c.now == nil {
 		c.now = time.Now
+	}
+	if c.sleep == nil {
+		c.sleep = sleepCtx
 	}
 	if err := c.reconcile(base); err != nil {
 		return nil, err
@@ -281,6 +295,9 @@ func (c *Cache) fetch(id string) (Entry, error) {
 	case <-c.base.Done():
 		return Entry{}, c.base.Err()
 	}
+	if err := c.waitTurn(id); err != nil {
+		return Entry{}, err
+	}
 
 	tmp, err := os.MkdirTemp(c.dir, tmpPrefix+id+"-")
 	if err != nil {
@@ -404,4 +421,36 @@ func (c *Cache) Size(ctx context.Context) (int64, error) {
 		total += r.Size
 	}
 	return total, err
+}
+
+// waitTurn delays a download until at least minInterval after the previous
+// one started, so a burst of requests (e.g. a freshly filled queue) reaches
+// YouTube one at a time, spread out. Queued tracks just wait their turn.
+func (c *Cache) waitTurn(id string) error {
+	if c.minInterval <= 0 {
+		return nil
+	}
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	if !c.lastStart.IsZero() {
+		if wait := c.lastStart.Add(c.minInterval).Sub(c.now()); wait > 0 {
+			c.logger.Info("cache: waiting before next download", "video", id, "wait", wait.Round(time.Second))
+			if err := c.sleep(c.base, wait); err != nil {
+				return err
+			}
+		}
+	}
+	c.lastStart = c.now()
+	return nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

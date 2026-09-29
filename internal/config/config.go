@@ -17,10 +17,11 @@ import (
 
 // Defaults for optional settings.
 const (
-	DefaultMaxQueueLength = 10
-	DefaultCacheMaxBytes  = 512 << 20 // 512 MiB
-	DefaultCacheMaxAge    = 12 * time.Hour
-	DefaultTestTone       = "assets/tone.opus" // committed with the code
+	DefaultMaxQueueLength   = 10
+	DefaultCacheMaxBytes    = 512 << 20 // 512 MiB
+	DefaultCacheMaxAge      = 12 * time.Hour
+	DefaultTestTone         = "assets/tone.opus" // committed with the code
+	DefaultYtdlpMinInterval = 30 * time.Second
 )
 
 // Config is the validated bot configuration.
@@ -39,7 +40,8 @@ type Config struct {
 	YtdlpPath          string
 	FfmpegPath         string
 	YtdlpJSRuntime     string
-	YtdlpCookies       string // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
+	YtdlpCookies       string        // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
+	YtdlpMinInterval   time.Duration // minimum time between yt-dlp runs; 0 = none
 }
 
 // file mirrors config.yaml. IDs stay strings here and are parsed to snowflakes after decoding.
@@ -57,6 +59,7 @@ type file struct {
 	FfmpegPath         string   `yaml:"ffmpeg_path"`
 	YtdlpJSRuntime     string   `yaml:"ytdlp_js_runtime"`
 	YtdlpCookies       string   `yaml:"ytdlp_cookies"`
+	YtdlpMinInterval   *string  `yaml:"ytdlp_min_interval"`
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from path into the process environment.
@@ -120,6 +123,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		FfmpegPath:         f.FfmpegPath,
 		YtdlpJSRuntime:     f.YtdlpJSRuntime,
 		YtdlpCookies:       strings.TrimSpace(f.YtdlpCookies),
+		YtdlpMinInterval:   DefaultYtdlpMinInterval,
 	}
 	if f.MaxConcurrentJobs != nil {
 		if *f.MaxConcurrentJobs < 1 {
@@ -145,6 +149,13 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("cache_max_age must be a duration like \"12h\" or \"30m\" (0 = never), got %q", *f.CacheMaxAge)
 		}
 		cfg.CacheMaxAge = d
+	}
+	if f.YtdlpMinInterval != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.YtdlpMinInterval))
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("ytdlp_min_interval must be a duration like \"30s\" (0 = none), got %q", *f.YtdlpMinInterval)
+		}
+		cfg.YtdlpMinInterval = d
 	}
 	if cfg.MaxDurationSeconds < 0 {
 		return Config{}, fmt.Errorf("max_duration_seconds must be 0 (no limit) or positive, got %d", cfg.MaxDurationSeconds)

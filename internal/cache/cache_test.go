@@ -493,3 +493,92 @@ func assertFiles(t *testing.T, dir string, names ...string) {
 		t.Errorf("cache dir contains %v, want %v", got, names)
 	}
 }
+
+func TestDownloadsStartAtLeastMinIntervalApart(t *testing.T) {
+	clk := newClock()
+	var mu sync.Mutex
+	var starts []time.Time
+	var slept []time.Duration
+	f := fetcherFunc(func(ctx context.Context, id, dir string) (ytdlp.Result, error) {
+		mu.Lock()
+		starts = append(starts, clk.Now())
+		mu.Unlock()
+		clk.add(5 * time.Second) // the download itself takes 5 s
+		p := filepath.Join(dir, id+".opus")
+		return ytdlp.Result{Path: p}, os.WriteFile(p, []byte("x"), 0o644)
+	})
+	c, _ := newCache(t, f, func(o *Options) {
+		o.Now, o.MinInterval = clk.Now, 30*time.Second
+		o.Sleep = func(_ context.Context, d time.Duration) error {
+			mu.Lock()
+			slept = append(slept, d)
+			mu.Unlock()
+			clk.add(d)
+			return nil
+		}
+	})
+
+	ctx := context.Background()
+	for _, id := range []string{"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"} {
+		if _, _, err := c.Get(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(starts) != 3 {
+		t.Fatalf("starts = %v", starts)
+	}
+	for i := 1; i < len(starts); i++ {
+		if gap := starts[i].Sub(starts[i-1]); gap < 30*time.Second {
+			t.Errorf("download %d started %v after the previous one, want >= 30s", i, gap)
+		}
+	}
+	// The first download doesn't wait; later ones wait only the remainder (30 s - 5 s of download).
+	if len(slept) != 2 || slept[0] != 25*time.Second {
+		t.Errorf("slept = %v, want [25s 25s]", slept)
+	}
+
+	// Cache hits never wait or touch the gate.
+	before := len(slept)
+	c.Get(ctx, "aaaaaaaaaaa")
+	if len(slept) != before {
+		t.Error("a cache hit must not wait")
+	}
+}
+
+func TestMinIntervalAlreadyElapsedDoesNotWait(t *testing.T) {
+	clk := newClock()
+	waited := false
+	c, _ := newCache(t, &fakeFetcher{}, func(o *Options) {
+		o.Now, o.MinInterval = clk.Now, 30*time.Second
+		o.Sleep = func(context.Context, time.Duration) error { waited = true; return nil }
+	})
+	c.Get(context.Background(), "aaaaaaaaaaa")
+	clk.add(time.Minute)
+	c.Get(context.Background(), "bbbbbbbbbbb")
+	if waited {
+		t.Error("no wait expected when the interval has already passed")
+	}
+}
+
+func TestShutdownWhileWaitingForTurn(t *testing.T) {
+	clk := newClock()
+	base, cancel := context.WithCancel(context.Background())
+	c, err := New(base, filepath.Join(t.TempDir(), "cache"), Options{
+		Fetcher: &fakeFetcher{}, Index: newMemIndex(), Now: clk.Now, MinInterval: time.Hour,
+		Sleep: func(ctx context.Context, d time.Duration) error { <-ctx.Done(); return ctx.Err() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Get(context.Background(), "aaaaaaaaaaa")
+	result := make(chan error, 1)
+	go func() { _, _, err := c.Get(context.Background(), "bbbbbbbbbbb"); result <- err }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if c.Has("bbbbbbbbbbb") {
+		t.Error("download ran despite shutdown")
+	}
+}

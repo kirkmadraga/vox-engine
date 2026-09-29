@@ -120,6 +120,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		MaxDownloads: cfg.MaxConcurrentJobs,
 		MaxBytes:     cfg.CacheMaxBytes,
 		MaxAge:       cfg.CacheMaxAge,
+		MinInterval:  cfg.YtdlpMinInterval,
 		InUse: func() map[string]bool {
 			if q == nil {
 				return nil
@@ -132,7 +133,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		return err
 	}
 	if size, err := audio.Size(ctx); err == nil {
-		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size, "max_bytes", cfg.CacheMaxBytes, "max_age", cfg.CacheMaxAge)
+		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size, "max_bytes", cfg.CacheMaxBytes, "max_age", cfg.CacheMaxAge, "download_interval", cfg.YtdlpMinInterval)
 	}
 	youtube := func(id string) queue.LoadFunc {
 		return func(ctx context.Context) (queue.Loaded, error) {
