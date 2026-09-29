@@ -27,6 +27,7 @@ test_tone: ./assets/tone.opus  # played by "@Bot test"; committed with the code
 ytdlp_js_runtime: quickjs
 
 # Optional: YouTube login cookies (Netscape cookies.txt) for hosts YouTube blocks,
-# e.g. datacenter VPSes. Use a spare Google account. yt-dlp writes the file back,
-# so it must be writable (keep it in data/). Never commit it.
+# e.g. datacenter VPSes. Use a spare Google account. The bot saves refreshed cookies
+# back and keeps short-lived private copies next to the file, so the file and its
+# folder must be writable (keep it in data/). Never commit it.
 # ytdlp_cookies: ./data/cookies.txt

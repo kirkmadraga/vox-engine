@@ -222,7 +222,7 @@ func TestCookiesFlagAndExpiryHint(t *testing.T) {
 	}
 
 	botCheck := "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies"
-	withCookies := Downloader{Runner: &fakeRunner{stderr: botCheck, err: exitErr}, Path: "yt-dlp", Cookies: "c.txt"}
+	withCookies := Downloader{Runner: &fakeRunner{stderr: botCheck, err: exitErr}, Path: "yt-dlp", Cookies: writeCookies(t, "SID=old")}
 	_, err := withCookies.Fetch(context.Background(), vid, "d")
 	var ye *Error
 	if !errors.As(err, &ye) || ye.Kind != KindBotCheck || !strings.Contains(ye.Detail, "may have expired") {

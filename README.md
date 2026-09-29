@@ -100,8 +100,9 @@ your main one):
    windows; avoid look-alike extensions, some steal logins).
 3. Close the private window without signing out, so YouTube doesn't rotate the
    exported cookies.
-4. Put the file on the server, readable and **writable** only by the bot (yt-dlp
-   saves refreshed cookies back), e.g. `data/cookies.txt`, and set
+4. Put the file on the server, readable and **writable** only by the bot, in a
+   folder the bot can write to (it saves refreshed cookies back and keeps
+   short-lived private copies next to the file), e.g. `data/cookies.txt`, and set
    `ytdlp_cookies: ./data/cookies.txt`.
 
 Treat it like a password: never commit or share it. If downloads start failing

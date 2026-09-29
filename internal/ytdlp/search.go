@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -36,16 +37,21 @@ type Searcher struct {
 	Runner    Runner
 	Path      string        // yt-dlp executable
 	JSRuntime string        // optional: passed as --js-runtimes
-	Cookies   string        // optional: passed as --cookies
+	Cookies   string        // optional: Netscape cookies.txt; each search gets a private copy, never saved back
 	Timeout   time.Duration // 0 = DefaultSearchTimeout
+	Lock      sync.Locker   // optional: guards Cookies while it's copied; share with Downloader.Lock
 
-	mu sync.Mutex
+	mu sync.Mutex // searches run one at a time
 }
 
-// SearchArgs returns the yt-dlp arguments for the first n results for query.
-// The query is only ever passed after the "ytsearchN:" prefix, so it can't be
-// read as an option.
+// SearchArgs returns the yt-dlp arguments for the first n results for query,
+// with the configured cookies file. The query is only ever passed after the
+// "ytsearchN:" prefix, so it can't be read as an option.
 func (s *Searcher) SearchArgs(query string, n int) []string {
+	return s.searchArgs(query, n, s.Cookies)
+}
+
+func (s *Searcher) searchArgs(query string, n int, cookies string) []string {
 	args := []string{
 		"--flat-playlist",
 		"--no-warnings",
@@ -55,8 +61,8 @@ func (s *Searcher) SearchArgs(query string, n int) []string {
 	if s.JSRuntime != "" {
 		args = append(args, "--js-runtimes", s.JSRuntime)
 	}
-	if s.Cookies != "" {
-		args = append(args, "--cookies", s.Cookies)
+	if cookies != "" {
+		args = append(args, "--cookies", cookies)
 	}
 	return append(args, fmt.Sprintf("ytsearch%d:%s", n, cleanQuery(query)))
 }
@@ -79,6 +85,15 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var cookies string // this search's private copy, thrown away afterwards
+	if s.Cookies != "" {
+		c, err := checkoutCookies(s.Cookies, s.Lock)
+		if err != nil {
+			return nil, &Error{Kind: KindFailed, Detail: err.Error()}
+		}
+		defer os.Remove(c)
+		cookies = c
+	}
 
 	timeout := s.Timeout
 	if timeout <= 0 {
@@ -87,7 +102,7 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, err := s.Runner.Run(ctx, s.Path, s.SearchArgs(query, n))
+	stdout, stderr, err := s.Runner.Run(ctx, s.Path, s.searchArgs(query, n, cookies))
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, &Error{Kind: KindTimeout, Detail: fmt.Sprintf("yt-dlp search timed out after %v", timeout)}

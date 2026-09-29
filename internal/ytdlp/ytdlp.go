@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,9 +38,11 @@ type Downloader struct {
 	Path           string        // yt-dlp executable
 	FFmpegLocation string        // optional: ffmpeg binary or its directory
 	JSRuntime      string        // optional: passed as --js-runtimes (e.g. "node")
-	Cookies        string        // optional: Netscape cookies.txt passed as --cookies (yt-dlp also writes it back)
+	Cookies        string        // optional: Netscape cookies.txt; each run gets a private copy, saved back on success
 	MaxDuration    time.Duration // 0 = no limit
 	Timeout        time.Duration // whole download; 0 = DefaultTimeout
+	Lock           sync.Locker   // optional: guards Cookies while it's copied or replaced; share with Searcher.Lock
+	Logger         *slog.Logger  // optional: reports cookies that couldn't be saved back
 }
 
 // DefaultTimeout bounds one download.
@@ -96,6 +101,15 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 	if !ValidID(id) {
 		return Result{}, &Error{Kind: KindInvalid, Detail: "invalid video id " + strconv.Quote(id)}
 	}
+	run := d // run.Cookies is this run's private copy
+	if d.Cookies != "" {
+		cookies, err := checkoutCookies(d.Cookies, d.Lock)
+		if err != nil {
+			return Result{}, &Error{Kind: KindFailed, Detail: err.Error()}
+		}
+		defer os.Remove(cookies) // already gone if it was saved back
+		run.Cookies = cookies
+	}
 	timeout := d.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -103,7 +117,7 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, err := d.Runner.Run(ctx, d.Path, d.Args(id, dir))
+	stdout, stderr, err := d.Runner.Run(ctx, d.Path, run.Args(id, dir))
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return Result{}, &Error{Kind: KindTimeout, Detail: fmt.Sprintf("yt-dlp timed out after %v", timeout)}
@@ -119,6 +133,12 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 			yerr.Detail += " (cookies are configured; they may have expired: re-export them)"
 		}
 		return Result{}, yerr
+	}
+	if d.Cookies != "" {
+		// yt-dlp finished normally, so its copy holds the freshest cookies.
+		if err := checkinCookies(run.Cookies, d.Cookies, d.Lock); err != nil && d.Logger != nil {
+			d.Logger.Warn("ytdlp: couldn't save refreshed cookies", "err", err)
+		}
 	}
 
 	var meta, file string

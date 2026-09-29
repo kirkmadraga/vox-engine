@@ -14,7 +14,7 @@ import (
 
 func TestSearchSuccess(t *testing.T) {
 	r := &fakeRunner{stdout: "VOXMETA jNQXAC9IVRw 19 Me at the zoo\n"}
-	s := &Searcher{Runner: r, Path: "yt-dlp", JSRuntime: "bun", Cookies: "data/cookies.txt"}
+	s := &Searcher{Runner: r, Path: "yt-dlp", JSRuntime: "bun"} // cookies: see cookies_test.go
 	hits, err := s.SearchN(context.Background(), "me at the zoo", 1)
 	if err != nil || len(hits) != 1 || hits[0] != (Hit{ID: vid, Title: "Me at the zoo", Duration: 19 * time.Second}) {
 		t.Fatalf("SearchN = %+v, %v", hits, err)
@@ -25,7 +25,6 @@ func TestSearchSuccess(t *testing.T) {
 	for _, want := range [][]string{
 		{"--flat-playlist"},
 		{"--js-runtimes", "bun"},
-		{"--cookies", "data/cookies.txt"},
 	} {
 		if !containsSeq(r.gotArgs, want) {
 			t.Errorf("args missing %v: %v", want, r.gotArgs)

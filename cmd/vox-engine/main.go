@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -104,6 +105,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		JSRuntime:      cfg.YtdlpJSRuntime,
 		Cookies:        cfg.YtdlpCookies,
 		MaxDuration:    time.Duration(cfg.MaxDurationSeconds) * time.Second,
+		Logger:         logger,
 	}
 	searcher := &ytdlp.Searcher{
 		Runner:    downloader.Runner,
@@ -116,6 +118,13 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	}
 	if cfg.YtdlpCookies != "" {
 		checkCookies(logger, cfg.YtdlpCookies)
+		// Each yt-dlp run uses a private copy of the cookies file; this lock
+		// guards the real file while it's copied or replaced.
+		cookiesLock := &sync.Mutex{}
+		downloader.Lock, searcher.Lock = cookiesLock, cookiesLock
+		if err := ytdlp.RemoveStaleCookieCopies(cfg.YtdlpCookies); err != nil {
+			logger.Warn("couldn't remove leftover cookie copies", "err", err)
+		}
 	}
 	// The queue is created later (it needs the Discord client); until then nothing is queued.
 	var q *queue.Manager
