@@ -31,3 +31,7 @@ config.yaml
 # Small committed test fixtures
 !/internal/voice/testdata/*.opus
 !/assets/*.opus
+
+# YouTube login cookies for yt-dlp: a credential, never commit
+cookies.txt
+*cookies*.txt
