@@ -42,3 +42,5 @@ deploy.local.env
 # Deployment scripts for the maintainer's own server: kept local, not published
 /deploy/
 /scripts/deploy.sh
+/scripts/local.sh
+/scripts/vps.sh
