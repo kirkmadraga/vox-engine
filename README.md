@@ -32,25 +32,52 @@ to anyone not allowed.
 
 ## Running it
 
-Needs Go 1.26+ to build, and on the machine running it: `yt-dlp`, `ffmpeg`, and a
-JavaScript runtime for yt-dlp (`node`, `deno`, or `quickjs`).
+### Dependencies
+
+To build:
+
+- **Go 1.26+.** No C toolchain: the build is pure Go (`CGO_ENABLED=0`), and the
+  binary runs on any x86-64 CPU.
+
+On the machine that runs the bot (found on `PATH`, or set in `config.yaml`):
+
+- **yt-dlp**, kept up to date (YouTube breaks old versions). Install it with
+  pip/pipx as `yt-dlp[default]` so its YouTube challenge scripts are included.
+- **ffmpeg**, which yt-dlp uses to repackage the audio (no re-encoding).
+- **A JavaScript runtime for yt-dlp:** `deno` or `node` where the CPU supports
+  them, or `quickjs` on older CPUs. Set it as `ytdlp_js_runtime`.
+
+### Build
+
+```bash
+go build -o bot ./cmd/bot
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o bot ./cmd/bot   # cross-compile for Linux
+```
+
+`scripts\check.ps1` runs vet, the race-enabled tests (needs gcc on PATH, else
+without `-race`), and both Windows and Linux builds into `dist/`.
+
+### Configure and run
 
 1. Create a bot in the Discord developer portal and invite it with permissions
    `3148800` (View Channel, Send Messages, Connect, Speak). No privileged
    intents are needed.
-2. `cp .env.example .env` and set `DISCORD_TOKEN`.
-3. `cp config.example.yaml config.yaml` and set your user ID in `owner_user_ids`
-   and `ytdlp_js_runtime`.
-4. `go run ./cmd/bot` (add `-debug` to log why messages are ignored).
+2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
+3. Copy `config.example.yaml` to `config.yaml`, then set your user ID in
+   `owner_user_ids` and pick `ytdlp_js_runtime`. The other settings are
+   documented in the file.
+4. Run it from the folder holding `config.yaml` (relative paths resolve from
+   there): `./bot`, or `go run ./cmd/bot`. Add `-debug` to log why messages
+   are ignored.
 5. In Discord: `@Bot allow guild`, then `@Bot allow @friend` for anyone who
    should be able to play music.
 
-Checks and builds (vet, race tests, Windows and Linux binaries):
-`powershell -File scripts\check.ps1`. Linux server setup is in
-[deploy/SETUP.md](deploy/SETUP.md).
+It writes `cache/` (audio) and `data/bot.db` (access lists, cache index), and
+needs `assets/tone.opus` for `test`. How you keep it running (systemd, a
+scheduled task, a container) is up to you.
 
 **Hosting note:** YouTube blocks many datacenter IPs ("Sign in to confirm you're
-not a bot"). A home connection just works; on a VPS, set `ytdlp_cookies` to a
-cookies.txt from a spare Google account (see [deploy/SETUP.md](deploy/SETUP.md)).
-On slow CPUs, yt-dlp's JavaScript challenge solving can take about a minute per
-new video.
+not a bot"). A home connection just works. On a server, point `ytdlp_cookies` at
+a cookies.txt exported from a spare Google account (the file must be writable:
+yt-dlp saves refreshed cookies back). On slow CPUs, yt-dlp's JavaScript challenge
+solving can take about a minute per new video.
