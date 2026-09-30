@@ -127,6 +127,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	}
 	searcher := &ytdlp.Searcher{
 		MaxConcurrent: cfg.MaxConcurrentSearches,
+		Logger:        logger,
 		Runner:        downloader.Runner,
 		Path:          downloader.Path,
 		JSRuntime:     downloader.JSRuntime,

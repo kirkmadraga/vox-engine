@@ -24,6 +24,21 @@ const (
 	KindMissingTool               // yt-dlp not installed / not found
 )
 
+var kindNames = [...]string{
+	KindFailed: "failed", KindInvalid: "invalid", KindPrivate: "private", KindAgeRestricted: "age-restricted",
+	KindRegionLocked: "region-locked", KindMembersOnly: "members-only", KindUnavailable: "unavailable",
+	KindLive: "live", KindTooLong: "too-long", KindBotCheck: "bot-check", KindTimeout: "timeout",
+	KindMissingTool: "missing-tool",
+}
+
+// String is a short name for logs, e.g. "bot-check".
+func (k Kind) String() string {
+	if k >= 0 && int(k) < len(kindNames) {
+		return kindNames[k]
+	}
+	return "unknown"
+}
+
 // Error is a classified yt-dlp failure. Detail is for logs; UserMessage is for Discord.
 type Error struct {
 	Kind   Kind

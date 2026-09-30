@@ -319,12 +319,14 @@ func (c *Cache) fetch(id string) (Entry, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return Entry{}, fmt.Errorf("downloader reported %q, but no such file was written", filepath.Base(res.Path))
 	}
+	validateStart := c.now()
 	if c.validate != nil {
 		if err := c.validate(got); err != nil {
 			log.Warn("cache: downloaded file rejected", "err", err)
 			return Entry{}, fmt.Errorf("downloaded audio is unusable: %w", err)
 		}
 	}
+	validated := c.now().Sub(validateStart).Round(time.Millisecond)
 
 	// Index first, then move the file into place. A crash in between leaves an
 	// index entry without a file, which the next startup drops. The reverse
@@ -339,7 +341,7 @@ func (c *Cache) fetch(id string) (Entry, error) {
 		_ = c.index.Delete(c.base, id)
 		return Entry{}, fmt.Errorf("move into cache: %w", err)
 	}
-	log.Info("cache: stored", "title", res.Title, "bytes", rec.Size)
+	log.Info("cache: stored", "title", res.Title, "bytes", rec.Size, "validate", validated)
 	return Entry{ID: id, Path: c.Path(id), Title: res.Title, Duration: res.Duration}, nil
 }
 

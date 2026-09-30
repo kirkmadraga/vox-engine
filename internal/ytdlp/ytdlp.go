@@ -19,30 +19,70 @@ type Runner interface {
 	Run(ctx context.Context, name string, args []string) (stdout, stderr []byte, err error)
 }
 
+// LineRunner is a Runner that can also report each stdout line as it arrives
+// (for timing yt-dlp's stages). Runners without it are timed as a whole.
+type LineRunner interface {
+	RunLines(ctx context.Context, name string, args []string, onLine func(line string)) (stdout, stderr []byte, err error)
+}
+
 // ExecRunner runs real processes.
 type ExecRunner struct{}
 
-func (ExecRunner) Run(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+func (r ExecRunner) Run(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+	return r.RunLines(ctx, name, args, nil)
+}
+
+// RunLines is Run, calling onLine (if not nil) for each complete stdout line
+// as soon as it is written.
+func (ExecRunner) RunLines(ctx context.Context, name string, args []string, onLine func(string)) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	// yt-dlp is Python: without this its stdout is block-buffered on a pipe,
+	// and every line would arrive at the end.
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+	out := &lineWriter{onLine: onLine}
+	var errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = out, &errb
 	cmd.WaitDelay = 5 * time.Second // don't hang on children holding the pipes after a kill
 	err := cmd.Run()
-	return out.Bytes(), errb.Bytes(), err
+	return out.all.Bytes(), errb.Bytes(), err
+}
+
+// lineWriter keeps everything written and calls onLine per complete line.
+type lineWriter struct {
+	all     bytes.Buffer
+	partial []byte
+	onLine  func(string)
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.all.Write(p)
+	if w.onLine == nil {
+		return len(p), nil
+	}
+	w.partial = append(w.partial, p...)
+	for {
+		i := bytes.IndexByte(w.partial, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		w.onLine(strings.TrimRight(string(w.partial[:i]), "\r"))
+		w.partial = w.partial[i+1:]
+	}
 }
 
 // Downloader fetches a video's audio as Ogg Opus using yt-dlp (and ffmpeg,
 // which yt-dlp calls to remux or, rarely, re-encode).
 type Downloader struct {
 	Runner         Runner
-	Path           string        // yt-dlp executable
-	FFmpegLocation string        // optional: ffmpeg binary or its directory
-	JSRuntime      string        // optional: passed as --js-runtimes (e.g. "node")
-	Cookies        string        // optional: Netscape cookies.txt; each run gets a private copy, saved back on success
-	MaxDuration    time.Duration // 0 = no limit
-	Timeout        time.Duration // whole download; 0 = DefaultTimeout
-	Lock           sync.Locker   // optional: guards Cookies while it's copied or replaced; share with Searcher.Lock
-	Logger         *slog.Logger  // optional: reports cookies that couldn't be saved back
+	Path           string           // yt-dlp executable
+	FFmpegLocation string           // optional: ffmpeg binary or its directory
+	JSRuntime      string           // optional: passed as --js-runtimes (e.g. "node")
+	Cookies        string           // optional: Netscape cookies.txt; each run gets a private copy, saved back on success
+	MaxDuration    time.Duration    // 0 = no limit
+	Timeout        time.Duration    // whole download; 0 = DefaultTimeout
+	Lock           sync.Locker      // optional: guards Cookies while it's copied or replaced; share with Searcher.Lock
+	Logger         *slog.Logger     // optional: timing per download, and cookies that couldn't be saved back
+	Now            func() time.Time // nil = time.Now; tests replace it
 }
 
 // DefaultTimeout bounds one download.
@@ -50,8 +90,9 @@ const DefaultTimeout = 5 * time.Minute
 
 // Output markers printed by yt-dlp via --print, so we can parse stdout reliably.
 const (
-	metaMarker = "VOXMETA "
-	fileMarker = "VOXFILE "
+	metaMarker  = "VOXMETA "  // info extracted (incl. YouTube's JS challenge); download starts next
+	stageMarker = "VOXSTAGE " // "download" (transfer starts) or "convert" (transfer done)
+	fileMarker  = "VOXFILE "  // final file in place
 )
 
 // Args returns the yt-dlp arguments for downloading id into dir.
@@ -69,6 +110,8 @@ func (d Downloader) Args(id, dir string) []string {
 		"--paths", dir,
 		"-o", "%(id)s.%(ext)s",
 		"--print", "pre_process:" + metaMarker + "%(is_live)s %(duration)s %(title)s",
+		"--print", "before_dl:" + stageMarker + "download",
+		"--print", "post_process:" + stageMarker + "convert",
 		"--print", "after_move:" + fileMarker + "%(filepath)s",
 	}
 	filter := "!is_live"
@@ -98,6 +141,15 @@ type Result struct {
 // Fetch downloads id's audio into dir (which should be empty and private to
 // this call) and returns the resulting .opus file and the video's metadata.
 func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
+	t := newStageTimer(d.Now)
+	res, err := d.runFetch(ctx, id, dir, t)
+	if d.Logger != nil {
+		d.Logger.Info("ytdlp: download timing", t.attrs(id, err)...)
+	}
+	return res, err
+}
+
+func (d Downloader) runFetch(ctx context.Context, id, dir string, t *stageTimer) (Result, error) {
 	if !ValidID(id) {
 		return Result{}, &Error{Kind: KindInvalid, Detail: "invalid video id " + strconv.Quote(id)}
 	}
@@ -117,7 +169,15 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, err := d.Runner.Run(ctx, d.Path, run.Args(id, dir))
+	t.begin()
+	var stdout, stderr []byte
+	var err error
+	if lr, ok := d.Runner.(LineRunner); ok {
+		stdout, stderr, err = lr.RunLines(ctx, d.Path, run.Args(id, dir), t.line)
+	} else {
+		stdout, stderr, err = d.Runner.Run(ctx, d.Path, run.Args(id, dir))
+	}
+	t.end()
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return Result{}, &Error{Kind: KindTimeout, Detail: fmt.Sprintf("yt-dlp timed out after %v", timeout)}

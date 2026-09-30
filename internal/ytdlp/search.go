@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -39,12 +40,14 @@ type Hit struct {
 // pointer.
 type Searcher struct {
 	Runner        Runner
-	Path          string        // yt-dlp executable
-	JSRuntime     string        // optional: passed as --js-runtimes
-	Cookies       string        // optional: Netscape cookies.txt; each search gets a private copy, never saved back
-	Timeout       time.Duration // 0 = DefaultSearchTimeout
-	Lock          sync.Locker   // optional: guards Cookies while it's copied; share with Downloader.Lock
-	MaxConcurrent int           // searches at the same time; <1 = 1
+	Path          string           // yt-dlp executable
+	JSRuntime     string           // optional: passed as --js-runtimes
+	Cookies       string           // optional: Netscape cookies.txt; each search gets a private copy, never saved back
+	Timeout       time.Duration    // 0 = DefaultSearchTimeout
+	Lock          sync.Locker      // optional: guards Cookies while it's copied; share with Downloader.Lock
+	MaxConcurrent int              // searches at the same time; <1 = 1
+	Logger        *slog.Logger     // optional: timing per search
+	Now           func() time.Time // nil = time.Now; tests replace it
 
 	once sync.Once
 	sem  chan struct{} // one token per running search
@@ -108,7 +111,7 @@ func cleanQuery(q string) string {
 // YouTube's order, or ErrNoResults.
 func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, error) {
 	n = min(max(n, 1), MaxResults)
-	return s.search(ctx, query, n, func(cookies string) []string {
+	return s.search(ctx, "youtube", query, n, func(cookies string) []string {
 		return s.args(cookies, fmt.Sprintf("ytsearch%d:%s", n, cleanQuery(query)))
 	})
 }
@@ -118,17 +121,31 @@ func (s *Searcher) SearchN(ctx context.Context, query string, n int) ([]Hit, err
 // and a title.
 func (s *Searcher) SearchMusic(ctx context.Context, query string, n int) ([]Hit, error) {
 	n = min(max(n, 1), MaxResults)
-	return s.search(ctx, query, n, func(cookies string) []string {
+	return s.search(ctx, "youtube-music", query, n, func(cookies string) []string {
 		return s.args(cookies, "--playlist-items", fmt.Sprintf("1:%d", n), MusicSearchURL(query))
 	})
 }
 
-// search runs yt-dlp with args(cookies) and parses up to n results.
-func (s *Searcher) search(ctx context.Context, query string, n int, args func(cookies string) []string) ([]Hit, error) {
+// search runs yt-dlp with args(cookies) and parses up to n results. kind
+// names the search in the timing log.
+func (s *Searcher) search(ctx context.Context, kind, query string, n int, args func(cookies string) []string) (hits []Hit, err error) {
 	if cleanQuery(query) == "" {
 		return nil, ErrNoResults
 	}
-	defer s.acquire()()
+	now := s.Now
+	if now == nil {
+		now = time.Now
+	}
+	asked := now()
+	release := s.acquire()
+	defer release()
+	started := now()
+	if s.Logger != nil {
+		defer func() {
+			s.Logger.Info("ytdlp: search timing", "kind", kind, "results", len(hits),
+				"took", round(now().Sub(started)), "waited", round(started.Sub(asked)), "outcome", searchOutcome(err))
+		}()
+	}
 	var cookies string // this search's private copy, thrown away afterwards
 	if s.Cookies != "" {
 		c, err := checkoutCookies(s.Cookies, s.Lock)
@@ -199,4 +216,12 @@ func parseResults(stdout string, n int) ([]Hit, error) {
 		return nil, &Error{Kind: KindFailed, Detail: fmt.Sprintf("search returned no valid videos: %q", bad)}
 	}
 	return nil, ErrNoResults
+}
+
+// searchOutcome is outcome, with "no-results" for an empty search.
+func searchOutcome(err error) string {
+	if errors.Is(err, ErrNoResults) {
+		return "no-results"
+	}
+	return outcome(err)
 }

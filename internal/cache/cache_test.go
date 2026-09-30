@@ -1,8 +1,10 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -580,5 +582,56 @@ func TestShutdownWhileWaitingForTurn(t *testing.T) {
 	}
 	if c.Has("bbbbbbbbbbb") {
 		t.Error("download ran despite shutdown")
+	}
+}
+
+// cache_max_bytes: 0 and cache_max_age: 0 each mean "no limit": nothing is
+// deleted for that reason, however big or old the cache gets, also while the
+// other limit is on.
+func TestZeroLimitsNeverPurge(t *testing.T) {
+	cases := map[string]struct {
+		maxBytes int64
+		maxAge   time.Duration
+	}{
+		"both off":                   {0, 0},
+		"age off, generous size cap": {1 << 20, 0},
+		"size off, age limit on":     {0, 12 * time.Hour},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			clk := newClock()
+			f := &fakeFetcher{content: strings.Repeat("x", 1000)}
+			cache, dir := newCache(t, f, func(o *Options) { o.Now, o.MaxBytes, o.MaxAge = clk.Now, c.maxBytes, c.maxAge })
+			ctx := context.Background()
+			for _, id := range []string{"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"} {
+				if _, _, err := cache.Get(ctx, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.maxAge == 0 {
+				clk.add(24 * 365 * time.Hour) // a year unplayed
+			} else {
+				clk.add(time.Hour) // well within the age limit
+			}
+			cache.Purge(ctx)
+			assertFiles(t, dir, "aaaaaaaaaaa.opus", "bbbbbbbbbbb.opus", "ccccccccccc.opus")
+		})
+	}
+}
+
+// The "stored" log line says how long checking the file took.
+func TestStoredLogsValidateTime(t *testing.T) {
+	var buf bytes.Buffer
+	clk := newClock()
+	c, _ := newCache(t, &fakeFetcher{}, func(o *Options) {
+		o.Now = clk.Now
+		o.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+		o.Validate = func(string) error { clk.add(1500 * time.Millisecond); return nil }
+	})
+	if _, _, err := c.Get(context.Background(), "aaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `msg="cache: stored"`) || !strings.Contains(buf.String(), "validate=1.5s") {
+		t.Errorf("log: %s", buf.String())
 	}
 }
