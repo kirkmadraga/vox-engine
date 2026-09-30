@@ -16,14 +16,43 @@ type Command interface {
 
 // Request is what a command receives: who asked, where, and how to answer.
 type Request struct {
-	GuildID   snowflake.ID
-	ChannelID snowflake.ID
-	AuthorID  snowflake.ID
-	Args      string // text after the command word, trimmed
-	Reply     Replier
+	GuildID    snowflake.ID
+	ChannelID  snowflake.ID
+	AuthorID   snowflake.ID
+	AuthorName string       // display name (server nickname if set)
+	MessageID  snowflake.ID // the message that asked; 0 for slash commands
+	Args       string       // text after the command word, trimmed
+	Reply      Replier
 	// Lucky is /play's "lucky" option: play a search's first good result
 	// instead of listing them. Slash-only; mentions never set it.
 	Lucky bool
+	// Search is /ask's "search" option: allow a web search for this question.
+	// Slash-only; mentions start the question with "search" instead.
+	Search bool
+	// Images are the asker's attached images, in order (mentions only).
+	Images []Image
+	// Quoted is the message this one replies to, when Discord included it
+	// (it needs the Message Content intent for other people's messages).
+	Quoted *Quote
+}
+
+// Image is an attached image. The URL is Discord's, never logged.
+type Image struct {
+	URL         string
+	ContentType string
+	Size        int
+}
+
+// Quote is a message someone replied to when asking.
+type Quote struct {
+	MessageID  snowflake.ID
+	AuthorID   snowflake.ID
+	AuthorName string
+	AuthorBot  bool
+	Self       bool // written by this bot (set by the router)
+	IsReply    bool // the quoted message is itself a Discord reply
+	Content    string
+	Images     []Image
 }
 
 // Reply is an outgoing message. Only the users in Mentions are pinged;
@@ -31,6 +60,26 @@ type Request struct {
 type Reply struct {
 	Content  string
 	Mentions []snowflake.ID
+	// ReplyTo, if set, sends this as a Discord reply to that message. Its
+	// author is pinged only with PingReplied. Slash replies ignore both.
+	ReplyTo     snowflake.ID
+	PingReplied bool
+	// Private asks for a reply only the user sees. Slash replies honour it;
+	// mention replies can't be private and send a normal message.
+	Private bool
+	// Sent, if set, is called with the ID of the (non-private) message sent.
+	Sent func(messageID snowflake.ID)
+}
+
+// TypingIndicator is implemented by repliers that can show "Bot is typing…"
+// while a command works. stop ends this command's share of it.
+type TypingIndicator interface {
+	StartTyping() (stop func())
+}
+
+// privateReply sends content as a private reply where possible.
+func privateReply(ctx context.Context, req Request, content string) error {
+	return req.Reply.Reply(ctx, Reply{Content: content, Private: true})
 }
 
 // Replier sends a message to the channel the request came from.

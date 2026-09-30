@@ -40,6 +40,20 @@ var migrations = []string{
 		last_played TEXT,
 		play_count  INTEGER NOT NULL DEFAULT 0
 	);`,
+	// 2: channels where a channel-limited command (ask) may run.
+	`CREATE TABLE allowed_channels (
+		channel_id INTEGER NOT NULL,
+		command    TEXT    NOT NULL,
+		added_by   INTEGER NOT NULL,
+		added_at   TEXT    NOT NULL,
+		PRIMARY KEY (channel_id, command)
+	);`,
+	// 3: each user's daily ask balance (a count only, never content).
+	`CREATE TABLE ask_balances (
+		user_id INTEGER PRIMARY KEY,
+		day     TEXT    NOT NULL,
+		balance INTEGER NOT NULL
+	);`,
 }
 
 // SchemaVersion is the version this build writes.

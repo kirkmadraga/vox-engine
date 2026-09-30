@@ -200,3 +200,43 @@ func TestKindNames(t *testing.T) {
 		}
 	}
 }
+
+// The owner's debug command sees the last download and search, and searches
+// running or waiting.
+func TestRecentRunsAndSearchStatus(t *testing.T) {
+	clock := newFakeClock()
+	recent := &Recent{}
+	d := Downloader{Runner: &lineRunner{clock: clock, script: fullScript, tail: 100 * time.Millisecond}, Now: clock.Now, Recent: recent}
+	d.Fetch(context.Background(), vid, "/tmp/dl")
+	dl, se := recent.Last()
+	if dl.Took != 45600*time.Millisecond || dl.Extract != 41800*time.Millisecond || dl.Outcome != "ok" || dl.At.IsZero() || !se.At.IsZero() {
+		t.Errorf("after a download: %+v / %+v", dl, se)
+	}
+
+	s := &Searcher{Runner: &lineRunner{clock: clock, script: []step{{time.Second, strings.TrimSpace(zooLine)}}}, Now: clock.Now, Recent: recent, MaxConcurrent: 1}
+	if st := s.Status(); st != (SearchStatus{Max: 1}) {
+		t.Errorf("idle: %+v", st)
+	}
+	release := s.acquire() // the only slot is busy
+	done := make(chan struct{})
+	go func() { s.SearchN(context.Background(), "q", 1); close(done) }()
+	for range 200 {
+		if s.Status().Waiting == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if st := s.Status(); st.Running != 1 || st.Waiting != 1 {
+		t.Errorf("busy: %+v", st)
+	}
+	release()
+	<-done
+	if _, se := recent.Last(); se.Took != time.Second || se.Outcome != "ok" {
+		t.Errorf("last search: %+v", se)
+	}
+	var none *Recent // nil-safe when not configured
+	none.setSearch(Run{})
+	if a, b := none.Last(); !a.At.IsZero() || !b.At.IsZero() {
+		t.Error("nil Recent must be empty")
+	}
+}

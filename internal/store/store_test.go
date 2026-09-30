@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,5 +109,66 @@ func TestAccessAndCacheShareOneFile(t *testing.T) {
 	}
 	if _, ok, _ := db.CacheIndex().Get(ctx, "jNQXAC9IVRw"); !ok {
 		t.Error("cache entry lost")
+	}
+}
+
+// A database from the build before ask channels (schema 1) upgrades in place:
+// its guilds and grants survive, and channels work afterwards.
+func TestUpgradeFromSchema1KeepsAccessLists(t *testing.T) {
+	path := tempDB(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		migrations[0],
+		`PRAGMA user_version = 1`,
+		`INSERT INTO allowed_guilds (guild_id, added_by, added_at) VALUES (100, 7, '2026-09-29T05:00:00Z')`,
+		`INSERT INTO grants (user_id, command, added_by, added_at) VALUES (8, 'play', 7, '2026-09-29T05:00:00Z')`,
+	} {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	raw.Close()
+
+	db := openAt(t, path)
+	ctx := context.Background()
+	snap, err := db.Access().Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Guilds) != 1 || snap.Guilds[0].GuildID != 100 || len(snap.Grants) != 1 || snap.Grants[0].UserID != 8 {
+		t.Errorf("access lists after upgrade: %+v", snap)
+	}
+	if ok, err := db.Access().AllowChannel(ctx, 500, "ask", access.Entry{AddedBy: 7}); err != nil || !ok {
+		t.Fatalf("AllowChannel after upgrade: %v, %v", ok, err)
+	}
+}
+
+func TestDailyBalances(t *testing.T) {
+	path := tempDB(t)
+	db := openAt(t, path)
+	ctx := context.Background()
+	if _, _, found, err := db.DailyBalance(ctx, 8); found || err != nil {
+		t.Fatalf("empty: found=%v err=%v", found, err)
+	}
+	for _, b := range []int{49, -3} { // a second write replaces the first; debt is allowed
+		if err := db.SetDailyBalance(ctx, 8, "2026-09-30", b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.SetDailyBalance(ctx, 1100000000000000009, "2026-09-29", 12) // large IDs keep precision
+	db.Close()
+
+	db = openAt(t, path) // survives a restart
+	if day, b, found, err := db.DailyBalance(ctx, 8); !found || err != nil || day != "2026-09-30" || b != -3 {
+		t.Errorf("user 8: %q %d %v %v", day, b, found, err)
+	}
+	if _, b, found, _ := db.DailyBalance(ctx, 1100000000000000009); !found || b != 12 {
+		t.Errorf("large ID: %d %v", b, found)
 	}
 }

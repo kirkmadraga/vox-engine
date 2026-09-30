@@ -25,8 +25,11 @@ type Options struct {
 	// Inherit maps a command to the command whose access it shares, e.g.
 	// "skip" -> "play": whoever may run play may run skip.
 	Inherit map[string]string
-	Now     func() time.Time
-	Logger  *slog.Logger
+	// ChannelLimited commands run, for non-owners, only in channels an owner
+	// allowed for them (AllowChannel), on top of the usual guild and grant rules.
+	ChannelLimited []string
+	Now            func() time.Time
+	Logger         *slog.Logger
 }
 
 // Policy applies the access rules on top of a Backend:
@@ -37,12 +40,22 @@ type Options struct {
 //   - Owner-only commands are never allowed for non-owners and cannot be granted.
 //   - Inheriting commands (e.g. skip -> play) are checked as their parent and
 //     cannot be granted themselves.
+//   - Channel-limited commands (ask) additionally need the channel, or a
+//     thread's parent channel, to be allowed for them. These choices are
+//     deliberate (the bot operator's), not gaps to fill in:
+//     default-deny, since no allowed channels means nowhere: the command may
+//     cost the operator money, so a new server must never get it by default;
+//     only owners choose the channels, like guilds and grants, and server
+//     admins get no setting for it (they can still mute the bot with
+//     Discord's own channel permissions, which nothing here overrides);
+//     owners bypass channel limits, like every other rule.
 type Policy struct {
 	backend   Backend
 	owners    map[snowflake.ID]struct{}
 	public    map[string]struct{}
 	ownerOnly map[string]struct{}
 	inherit   map[string]string
+	channeled map[string]struct{}
 	now       func() time.Time
 	logger    *slog.Logger
 }
@@ -55,6 +68,7 @@ func NewPolicy(backend Backend, opts Options) *Policy {
 		public:    lowerSet(opts.Public),
 		ownerOnly: lowerSet(opts.OwnerOnly),
 		inherit:   make(map[string]string, len(opts.Inherit)),
+		channeled: lowerSet(opts.ChannelLimited),
 		now:       opts.Now,
 		logger:    opts.Logger,
 	}
@@ -135,6 +149,53 @@ func (p *Policy) Allowed(ctx context.Context, userID, guildID snowflake.ID, comm
 		return false
 	}
 	return ok
+}
+
+// IsChannelLimited reports whether command runs only in allowed channels.
+func (p *Policy) IsChannelLimited(command string) bool {
+	_, ok := p.channeled[strings.ToLower(command)]
+	return ok
+}
+
+// ChannelAllowed implements Checker: owners and commands without channel
+// limits pass; otherwise one of channelIDs (0s are skipped) must be allowed
+// for command. Backend errors deny (and are logged).
+func (p *Policy) ChannelAllowed(ctx context.Context, userID snowflake.ID, command string, channelIDs ...snowflake.ID) bool {
+	command = strings.ToLower(command)
+	if parent, ok := p.inherit[command]; ok {
+		command = parent // e.g. forget runs where ask runs
+	}
+	if p.IsOwner(userID) || !p.IsChannelLimited(command) {
+		return true
+	}
+	for _, ch := range channelIDs {
+		if ch == 0 {
+			continue
+		}
+		ok, err := p.backend.ChannelAllowed(ctx, ch, command)
+		if err != nil {
+			p.logger.Error("access check failed", "channel", ch, "command", command, "err", err)
+			return false
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowChannel lets channel-limited command run in channelID.
+func (p *Policy) AllowChannel(ctx context.Context, channelID snowflake.ID, command string, by snowflake.ID) (bool, error) {
+	command = strings.ToLower(command)
+	changed, err := p.backend.AllowChannel(ctx, channelID, command, p.entry(by))
+	return changed, p.logChange(changed, err, "allow channel", "channel", channelID, "command", command, "by", by)
+}
+
+// DenyChannel removes channelID from command's channels.
+func (p *Policy) DenyChannel(ctx context.Context, channelID snowflake.ID, command string, by snowflake.ID) (bool, error) {
+	command = strings.ToLower(command)
+	changed, err := p.backend.DenyChannel(ctx, channelID, command)
+	return changed, p.logChange(changed, err, "deny channel", "channel", channelID, "command", command, "by", by)
 }
 
 // GuildAllowed reports whether guildID is on the allow-list.

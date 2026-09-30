@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,15 +49,21 @@ type Searcher struct {
 	MaxConcurrent int              // searches at the same time; <1 = 1
 	Logger        *slog.Logger     // optional: timing per search
 	Now           func() time.Time // nil = time.Now; tests replace it
+	Recent        *Recent          // optional: remembers the last search
 
-	once sync.Once
-	sem  chan struct{} // one token per running search
+	once    sync.Once
+	sem     chan struct{} // one token per running search
+	waiting atomic.Int32  // searches waiting for a slot
 }
+
+func (s *Searcher) initSem() { s.sem = make(chan struct{}, max(s.MaxConcurrent, 1)) }
 
 // acquire waits for a free search slot; the returned func releases it.
 func (s *Searcher) acquire() func() {
-	s.once.Do(func() { s.sem = make(chan struct{}, max(s.MaxConcurrent, 1)) })
+	s.once.Do(s.initSem)
+	s.waiting.Add(1)
 	s.sem <- struct{}{}
+	s.waiting.Add(-1)
 	return func() { <-s.sem }
 }
 
@@ -140,6 +147,9 @@ func (s *Searcher) search(ctx context.Context, kind, query string, n int, args f
 	release := s.acquire()
 	defer release()
 	started := now()
+	defer func() {
+		s.Recent.setSearch(Run{At: now(), Took: round(now().Sub(started)), Outcome: searchOutcome(err)})
+	}()
 	if s.Logger != nil {
 		defer func() {
 			s.Logger.Info("ytdlp: search timing", "kind", kind, "results", len(hits),

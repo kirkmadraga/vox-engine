@@ -23,12 +23,30 @@ see (`unauthorized_message` in `config.yaml`); a mention from them gets no reply
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
+| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; see below) | Granted users (its own grant), in channels an owner enabled |
+| `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |
 | `allow` / `deny @user [command]` | Grant or revoke a command (default `play`) | Owners |
-| `access` | Show allowed servers and grants | Owners |
+| `allow` / `deny ask [#channel or ID]` | Enable or disable `ask` in a channel (default: this one; threads follow their channel) | Owners |
 
 Owners (from `config.yaml`) can use everything, everywhere. The bot stays silent
 to anyone not allowed.
+
+About `ask` (settings and comments in `config.example.yaml`):
+
+- It uses xAI (Grok) or OpenAI through their Responses API, with the key in
+  `.env` as `LLM_API_KEY`. Questions, the channel's recent `ask` conversation
+  and any image are sent to that provider.
+- It remembers each channel's recent conversation (in memory only), and a
+  reply to one of its answers (with the reply's @ on) continues it.
+- It's limited per person (a cooldown and a daily allowance), in question
+  length, and in how many questions run at once.
+- Web search is `off`, `on-request` (start the question with `search`, or
+  `/ask search:True`) or `always`. Searches cost several times a plain answer.
+- With `discord_message_content` on, a question that replies to someone's
+  message (text or image) includes that message. The bot then receives every
+  message in channels it can see, but acts on and remembers only those
+  addressed to it.
 
 ## How it works
 

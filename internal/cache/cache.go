@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
@@ -53,9 +54,10 @@ type Cache struct {
 	sleep    func(ctx context.Context, d time.Duration) error
 
 	// Downloads start at least minInterval apart, to stay polite to YouTube.
-	minInterval time.Duration
-	startMu     sync.Mutex
-	lastStart   time.Time
+	minInterval    time.Duration
+	startMu        sync.Mutex
+	lastStart      time.Time
+	lastStartNanos atomic.Int64 // lastStart, readable without startMu
 
 	mu       sync.Mutex
 	inflight map[string]*download
@@ -443,7 +445,43 @@ func (c *Cache) waitTurn(id string) error {
 		}
 	}
 	c.lastStart = c.now()
+	c.lastStartNanos.Store(c.lastStart.UnixNano()) // for Status, which mustn't wait on startMu
 	return nil
+}
+
+// Status is a read-only snapshot for the owner's debug command.
+type Status struct {
+	Bytes, MaxBytes int64
+	MaxAge          time.Duration
+	Songs           int
+	OldestUse       time.Time // the least recently used song's last play (or download)
+	Downloads       int       // being downloaded or waiting to (for a slot or the spacing)
+	Downloading     int       // holding a download slot
+	DownloadSlots   int
+	NextDownloadIn  time.Duration // until the next download may start (spacing); 0 = now
+}
+
+// Status reports the cache's size and contents and its downloads.
+func (c *Cache) Status(ctx context.Context) (Status, error) {
+	s := Status{MaxBytes: c.maxBytes, MaxAge: c.maxAge, Downloading: len(c.slots), DownloadSlots: cap(c.slots)}
+	c.mu.Lock()
+	s.Downloads = len(c.inflight)
+	c.mu.Unlock()
+	if last := c.lastStartNanos.Load(); last != 0 && c.minInterval > 0 {
+		s.NextDownloadIn = max(time.Unix(0, last).Add(c.minInterval).Sub(c.now()), 0)
+	}
+	records, err := c.index.All(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.Songs = len(records)
+	for _, r := range records {
+		s.Bytes += r.Size
+		if u := r.LastUsed(); s.OldestUse.IsZero() || u.Before(s.OldestUse) {
+			s.OldestUse = u
+		}
+	}
+	return s, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

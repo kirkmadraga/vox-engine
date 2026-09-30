@@ -37,6 +37,24 @@ func playData(query string) string {
 	return `{"id":"1","name":"play","type":1,"options":[{"name":"query","type":3,"value":` + string(q) + `}]}`
 }
 
+func askData(prompt string) string {
+	p, _ := json.Marshal(prompt)
+	return `{"id":"1","name":"ask","type":1,"options":[{"name":"prompt","type":3,"value":` + string(p) + `}]}`
+}
+
+// askChannelData is "/<verb> ask" with an optional picked channel and typed ID
+// (option type 7: channel).
+func askChannelData(verb string, channel snowflake.ID, id string) string {
+	var opts []string
+	if channel != 0 {
+		opts = append(opts, `{"name":"channel","type":7,"value":"`+channel.String()+`"}`)
+	}
+	if id != "" {
+		opts = append(opts, `{"name":"id","type":3,"value":"`+id+`"}`)
+	}
+	return `{"id":"1","name":"` + verb + `","type":1,"options":[{"name":"ask","type":1,"options":[` + strings.Join(opts, ",") + `]}]}`
+}
+
 func simpleData(name string) string { return `{"id":"1","name":"` + name + `","type":1}` }
 
 func userData(verb string, user snowflake.ID, command string) string {
@@ -61,12 +79,17 @@ func TestSlashArgs(t *testing.T) {
 		playData("never gonna give you up"):         "never gonna give you up",
 		playData("  https://youtu.be/dQw4w9WgXcQ "): "https://youtu.be/dQw4w9WgXcQ",
 		playData("2"):                           "2",
+		askData("  What is jazz? "):             "What is jazz?",
 		simpleData("queue"):                     "",
-		simpleData("access"):                    "",
+		simpleData("forget"):                    "",
 		userData("allow", 8, "play"):            "<@8> play",
 		userData("deny", 8, ""):                 "<@8>",
 		guildData("allow", ""):                  "guild",
 		guildData("deny", "123456789012345678"): "guild 123456789012345678",
+		askChannelData("allow", 0, ""):          "ask",
+		askChannelData("allow", 500, ""):        "ask 500",
+		askChannelData("deny", 0, "600"):        "ask 600",
+		askChannelData("allow", 500, "600"):     "ask 500", // the picked channel wins
 	}
 	for raw, want := range cases {
 		if got, ok := slashArgs(slashData(t, raw)); !ok || got != want {
@@ -84,7 +107,7 @@ func TestSlashArgs(t *testing.T) {
 func TestSlashCommandsMatchRegistry(t *testing.T) {
 	reg := []commands.Command{
 		commands.Ping{}, commands.Play{}, commands.Test{}, commands.QueueList{}, commands.Skip{}, commands.Stop{},
-		commands.Allow{}, commands.Deny{}, commands.AccessList{},
+		commands.Allow{}, commands.Deny{}, &commands.Ask{}, commands.Forget{}, // debug: hidden, mentions only
 	}
 	var want []string
 	for _, c := range reg {
@@ -92,7 +115,7 @@ func TestSlashCommandsMatchRegistry(t *testing.T) {
 	}
 	var got []string
 	byName := map[string]discord.SlashCommandCreate{}
-	for _, c := range SlashCommands([]string{"play"}) {
+	for _, c := range SlashCommands([]string{"play"}, true, true) {
 		s := c.(discord.SlashCommandCreate)
 		got = append(got, s.Name)
 		byName[s.Name] = s
@@ -128,16 +151,23 @@ type fakeEvent struct {
 	raw     discord.SlashCommandInteractionData
 	guild   *snowflake.ID
 	user    snowflake.ID
-	log     *[]string // shared, ordered: respond/defer/update/followup/run
+	channel snowflake.ID // 0 = channel 1
+	log     *[]string    // shared, ordered: respond/defer/update/followup/run
 	private []discord.MessageCreate
 }
 
 func (f *fakeEvent) data() (discord.SlashCommandInteractionData, bool) { return f.raw, true }
 func (f *fakeEvent) guildID() *snowflake.ID                            { return f.guild }
-func (f *fakeEvent) channelID() snowflake.ID                           { return 1 }
-func (f *fakeEvent) userID() snowflake.ID                              { return f.user }
-func (f *fakeEvent) applicationID() snowflake.ID                       { return 1000 }
-func (f *fakeEvent) token() string                                     { return "tok" }
+func (f *fakeEvent) channelID() snowflake.ID {
+	if f.channel == 0 {
+		return 1
+	}
+	return f.channel
+}
+func (f *fakeEvent) userID() snowflake.ID        { return f.user }
+func (f *fakeEvent) userName() string            { return "user" + f.user.String() }
+func (f *fakeEvent) applicationID() snowflake.ID { return 1000 }
+func (f *fakeEvent) token() string               { return "tok" }
 func (f *fakeEvent) respond(m discord.MessageCreate) error {
 	f.private = append(f.private, m)
 	*f.log = append(*f.log, "respond")
@@ -154,12 +184,16 @@ type fakeResponder struct {
 func (f *fakeResponder) UpdateInteractionResponse(app snowflake.ID, token string, u discord.MessageUpdate, _ ...rest.RequestOpt) (*discord.Message, error) {
 	*f.log = append(*f.log, "update")
 	f.updates = append(f.updates, u)
-	return nil, nil
+	return &discord.Message{ID: 500}, nil
+}
+func (f *fakeResponder) DeleteInteractionResponse(app snowflake.ID, token string, _ ...rest.RequestOpt) error {
+	*f.log = append(*f.log, "delete")
+	return nil
 }
 func (f *fakeResponder) CreateFollowupMessage(app snowflake.ID, token string, m discord.MessageCreate, _ ...rest.RequestOpt) (*discord.Message, error) {
 	*f.log = append(*f.log, "followup")
 	f.followups = append(f.followups, m)
-	return nil, nil
+	return &discord.Message{ID: snowflake.ID(600 + len(f.followups))}, nil
 }
 
 // recordCmd stands in for a playback command: it records its args and replies.
@@ -174,6 +208,9 @@ func (c recordCmd) Run(ctx context.Context, req commands.Request) error {
 	entry := "run " + c.name + " " + req.Args
 	if req.Lucky {
 		entry += " [lucky]"
+	}
+	if req.Search {
+		entry += " [search]"
 	}
 	*c.log = append(*c.log, entry)
 	for i := range c.replies {
@@ -209,13 +246,15 @@ func newSlashE2E(t *testing.T) *slashE2E {
 	}
 	policy := access.NewPolicy(accesstest.NewMemory(), access.Options{
 		Owners: []snowflake.ID{owner}, Public: []string{"ping"}, OwnerOnly: commands.ManagementCommands, Inherit: inherit,
+		ChannelLimited: []string{commands.AskCommand},
 	})
 	var reg *commands.Registry
 	known := func(name string) bool { _, ok := reg.Lookup(name); return ok }
 	cmds := []commands.Command{
 		commands.Ping{},
-		commands.Allow{Access: policy, Known: known}, commands.Deny{Access: policy}, commands.AccessList{Access: policy},
+		commands.Allow{Access: policy, Known: known}, commands.Deny{Access: policy}, commands.Debug{Access: policy},
 		recordCmd{name: "play", log: &e.log, replies: 1},
+		recordCmd{name: commands.AskCommand, log: &e.log, replies: 1},
 	}
 	for _, c := range commands.PlaybackCommands {
 		cmds = append(cmds, recordCmd{name: c, log: &e.log, replies: 1})
@@ -225,6 +264,7 @@ func newSlashE2E(t *testing.T) *slashE2E {
 		t.Fatal(err)
 	}
 	e.router = router.New(func() snowflake.ID { return 1000 }, reg, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	e.router.Fallback = commands.AskCommand
 	return e
 }
 
@@ -284,8 +324,15 @@ func TestSlashAndMentionsShareThePolicy(t *testing.T) {
 		{friend, allowedG, "play x", playData("x"), true, false},
 		{friend, allowedG, "queue", simpleData("queue"), true, false}, // inherits play
 		{friend, allowedG, "stop", simpleData("stop"), true, false},
-		{friend, otherG, "play x", playData("x"), false, false},          // grant, but server not allowed
-		{friend, allowedG, "access", simpleData("access"), false, false}, // owner-only
+		{friend, allowedG, "what is jazz", askData("what is jazz"), false, false}, // play's grant doesn't cover ask
+		{friend, allowedG, "ask what is jazz", askData("what is jazz"), false, false},
+		{owner, allowedG, "allow ask", askChannelData("allow", 0, ""), true, true},    // this channel
+		{friend, allowedG, "ask what is jazz", askData("what is jazz"), false, false}, // channel, but no grant
+		{owner, allowedG, "allow <@8> ask", userData("allow", friend, "ask"), true, true},
+		{friend, allowedG, "what is jazz", askData("what is jazz"), true, false},
+		{friend, allowedG, "ask what is jazz", askData("what is jazz"), true, false},
+		{stranger, allowedG, "what is jazz", askData("what is jazz"), false, false},
+		{friend, otherG, "play x", playData("x"), false, false}, // grant, but server not allowed
 		{friend, allowedG, "allow <@9>", userData("allow", stranger, ""), false, false},
 		{stranger, allowedG, "play x", playData("x"), false, false},
 		{owner, allowedG, "deny <@8>", userData("deny", friend, ""), true, true},
@@ -355,6 +402,45 @@ func TestInteractionReplierFollowsUp(t *testing.T) {
 	}
 }
 
+// Slash answers report their message IDs too (the edited "thinking…", then
+// follow-ups), so replies to /ask answers continue the conversation.
+func TestInteractionReplierReportsSentIDs(t *testing.T) {
+	var log []string
+	resp := &fakeResponder{log: &log}
+	r := &InteractionReplier{Rest: resp, ApplicationID: 1000, Token: "tok"}
+	var got []snowflake.ID
+	sent := func(id snowflake.ID) { got = append(got, id) }
+	r.Reply(context.Background(), commands.Reply{Content: "first", Sent: sent})
+	r.Reply(context.Background(), commands.Reply{Content: "second", Sent: sent})
+	if len(got) != 2 || got[0] != 500 {
+		t.Errorf("sent IDs %v", got)
+	}
+}
+
+// A private first reply removes the public "thinking…" and follows up
+// privately; a private later reply is a private follow-up.
+func TestInteractionReplierPrivate(t *testing.T) {
+	var log []string
+	resp := &fakeResponder{log: &log}
+	r := &InteractionReplier{Rest: resp, ApplicationID: 1000, Token: "tok"}
+	r.Reply(context.Background(), commands.Reply{Content: "You can ask again in 4s.", Private: true})
+	r.Reply(context.Background(), commands.Reply{Content: "later", Private: true})
+	if !slices.Equal(log, []string{"delete", "followup", "followup"}) {
+		t.Fatalf("log = %q", log)
+	}
+	for _, f := range resp.followups {
+		if f.Flags != discord.MessageFlagEphemeral {
+			t.Errorf("%q: flags %v, want ephemeral", f.Content, f.Flags)
+		}
+	}
+	if len(resp.updates) != 0 {
+		t.Errorf("a private reply must not edit the public message: %+v", resp.updates)
+	}
+	if !r.Used() {
+		t.Error("a private reply counts as replying (no extra \"Done.\")")
+	}
+}
+
 // A command that never replies still replaces "thinking…".
 func TestSlashSilentCommandSaysDone(t *testing.T) {
 	e := newSlashE2E(t)
@@ -412,8 +498,46 @@ func TestLuckyOnlyFromTheSlashOption(t *testing.T) {
 	}
 }
 
+// /ask exists only when an LLM is set up, with a required prompt, and runs the
+// ask command with the prompt as its args.
+func TestSlashAsk(t *testing.T) {
+	has := func(ask bool) (discord.SlashCommandCreate, bool) {
+		for _, c := range SlashCommands([]string{"play"}, ask, ask) {
+			if s := c.(discord.SlashCommandCreate); s.Name == "ask" {
+				return s, true
+			}
+		}
+		return discord.SlashCommandCreate{}, false
+	}
+	if _, ok := has(false); ok {
+		t.Error("/ask is registered with no LLM set up")
+	}
+	for _, on := range []bool{false, true} {
+		found := false
+		for _, c := range SlashCommands([]string{"play"}, on, on) {
+			found = found || c.(discord.SlashCommandCreate).Name == "forget"
+		}
+		if found != on {
+			t.Errorf("ask on=%v: /forget registered = %v", on, found)
+		}
+	}
+	s, ok := has(true)
+	if !ok {
+		t.Fatal("/ask is missing")
+	}
+	if p := s.Options[0].(discord.ApplicationCommandOptionString); p.Name != "prompt" || !p.Required {
+		t.Errorf("/ask needs a required prompt: %+v", p)
+	}
+
+	e := newSlashE2E(t)
+	e.slash(owner, allowedG, askData("  What is Jazz? "))
+	if !slices.Contains(e.log, "run ask What is Jazz?") {
+		t.Errorf("events %q", e.log)
+	}
+}
+
 func TestPlayLuckyOptionIsOptional(t *testing.T) {
-	for _, c := range SlashCommands([]string{"play"}) {
+	for _, c := range SlashCommands([]string{"play"}, false, false) {
 		s := c.(discord.SlashCommandCreate)
 		if s.Name != "play" {
 			continue
@@ -422,5 +546,112 @@ func TestPlayLuckyOptionIsOptional(t *testing.T) {
 		if !ok || lucky.Name != "lucky" || lucky.Required {
 			t.Errorf("/play's second option = %+v; want an optional boolean named lucky", s.Options[1])
 		}
+	}
+}
+
+// /allow ask and /deny ask exist only when ask is on.
+func TestAskChannelSubcommandOnlyWithAsk(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		for _, c := range SlashCommands([]string{"play"}, on, on) {
+			s := c.(discord.SlashCommandCreate)
+			if s.Name != "allow" && s.Name != "deny" {
+				continue
+			}
+			has := false
+			for _, o := range s.Options {
+				if sub, ok := o.(discord.ApplicationCommandOptionSubCommand); ok && sub.Name == "ask" {
+					has = true
+					if ch := sub.Options[0].(discord.ApplicationCommandOptionChannel); ch.Required {
+						t.Errorf("/%s ask: the channel must be optional (default: this channel)", s.Name)
+					}
+				}
+			}
+			if has != on {
+				t.Errorf("/%s with ask=%v: ask subcommand present = %v", s.Name, on, has)
+			}
+		}
+	}
+}
+
+// Outside ask channels: /ask and an explicit "ask" get the hint, the mention
+// fallback stays silent, and a thread counts as its parent channel.
+func TestAskOnlyInAllowedChannelsBothWays(t *testing.T) {
+	e := newSlashE2E(t)
+	const askChan, otherChan, thread snowflake.ID = 1, 2, 3
+	e.router.ThreadParent = func(id snowflake.ID) snowflake.ID {
+		if id == thread {
+			return askChan
+		}
+		return 0
+	}
+	mention := func(user, channel snowflake.ID, text string) []commands.Reply {
+		mr := &mentionReplier{}
+		e.router.Handle(context.Background(), router.Message{GuildID: allowedG, ChannelID: channel, AuthorID: user, Content: "<@1000> " + text}, mr)
+		return mr.got
+	}
+	slashIn := func(user, channel snowflake.ID, raw string) *fakeEvent {
+		e.log = nil
+		ev := &fakeEvent{raw: slashData(t, raw), guild: new(allowedG), user: user, channel: channel, log: &e.log}
+		handleSlash(context.Background(), e.router, &fakeResponder{log: &e.log}, denied, slog.New(slog.NewTextHandler(io.Discard, nil)), ev)
+		return ev
+	}
+	mention(owner, askChan, "allow guild")
+	mention(owner, askChan, "allow <@8> ask")
+	mention(owner, askChan, "allow ask")
+
+	hint := router.WrongChannelMessage("ask")
+	if ev := slashIn(friend, otherChan, askData("hi")); len(ev.private) != 1 || ev.private[0].Content != hint || slices.Contains(e.log, "run ask hi") {
+		t.Errorf("/ask elsewhere: private %+v, events %q", ev.private, e.log)
+	}
+	if got := mention(friend, otherChan, "ask hi"); len(got) != 1 || got[0].Content != hint {
+		t.Errorf("explicit ask elsewhere: %+v", got)
+	}
+	if got := mention(friend, otherChan, "hi there"); len(got) != 0 {
+		t.Errorf("the fallback elsewhere must stay silent: %+v", got)
+	}
+	if got := mention(friend, askChan, "hi there"); len(got) != 1 {
+		t.Errorf("the fallback in the ask channel: %+v", got)
+	}
+	if slashIn(friend, thread, askData("hi")); !slices.Contains(e.log, "run ask hi") {
+		t.Errorf("/ask in a thread of the ask channel: events %q", e.log)
+	}
+	if slashIn(owner, otherChan, askData("hi")); !slices.Contains(e.log, "run ask hi") {
+		t.Errorf("owners bypass channel limits: events %q", e.log)
+	}
+	// Someone without the grant still gets the plain refusal, not the hint.
+	if ev := slashIn(stranger, otherChan, askData("hi")); len(ev.private) != 1 || ev.private[0].Content != denied {
+		t.Errorf("no grant: private %+v", ev.private)
+	}
+}
+
+// /ask's search switch exists only when search is on request, is optional,
+// and reaches the command.
+func TestSlashAskSearchOption(t *testing.T) {
+	find := func(askSearch bool) (discord.ApplicationCommandOptionBool, bool) {
+		for _, c := range SlashCommands([]string{"play"}, true, askSearch) {
+			s := c.(discord.SlashCommandCreate)
+			if s.Name != "ask" {
+				continue
+			}
+			for _, o := range s.Options {
+				if b, ok := o.(discord.ApplicationCommandOptionBool); ok && b.Name == "search" {
+					return b, true
+				}
+			}
+		}
+		return discord.ApplicationCommandOptionBool{}, false
+	}
+	if _, ok := find(false); ok {
+		t.Error("search switch shown although search isn't on request")
+	}
+	if b, ok := find(true); !ok || b.Required {
+		t.Errorf("search switch: %+v, found %v; want an optional switch", b, ok)
+	}
+
+	e := newSlashE2E(t)
+	raw := `{"id":"1","name":"ask","type":1,"options":[{"name":"prompt","type":3,"value":"news"},{"name":"search","type":5,"value":true}]}`
+	e.slash(owner, allowedG, raw)
+	if !slices.Contains(e.log, "run ask news [search]") {
+		t.Errorf("events %q", e.log)
 	}
 }

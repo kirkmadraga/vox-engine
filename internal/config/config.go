@@ -8,8 +8,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"time"
+	_ "time/tzdata" // timezone names work even where the OS has no tz database (Windows, slim images)
 
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/joho/godotenv"
@@ -31,6 +33,99 @@ const (
 	DefaultUnauthorizedMessage = "You can't use that command here."
 	maxUnauthorizedMessageLen  = 2000 // Discord's message limit
 )
+
+// Defaults for the ask command's load limits.
+const (
+	DefaultLLMUserCooldown    = 10 * time.Second
+	DefaultLLMMaxConcurrent   = 3
+	DefaultLLMHistoryMessages = 10
+	DefaultLLMHistoryMaxAge   = 10 * time.Minute
+	DefaultLLMTimeout         = 60 * time.Second
+	DefaultLLMMaxPromptChars  = 500
+	DefaultLLMDailyLimit      = 50
+	DefaultLLMWeightSearch    = 8 // a search answer measured 5-9x a plain one (grok-4.3, 2026-09-30)
+	DefaultLLMWeightImage     = 4
+)
+
+// LLMProviders are the accepted llm_provider values: "echo" (a stand-in that
+// repeats the question), "xai" (Grok) and "openai", both through the
+// Responses API.
+var LLMProviders = []string{"echo", "xai", "openai"}
+
+// Defaults for the model bridge.
+const (
+	DefaultLLMMaxTokens    = 500
+	DefaultLLMMaxToolTurns = 2
+)
+
+// defaultLLMBaseURLs are the providers' API addresses; llm_base_url overrides.
+var defaultLLMBaseURLs = map[string]string{
+	"xai":    "https://api.x.ai/v1",
+	"openai": "https://api.openai.com/v1",
+}
+
+// parseLLMBridge reads the model bridge's settings, which only matter when
+// llm_provider is set. The API key comes from the environment (LLM_API_KEY).
+func parseLLMBridge(cfg *Config, f file, getenv func(string) string) error {
+	cfg.LLMMaxTokens = DefaultLLMMaxTokens
+	cfg.LLMMaxToolTurns = DefaultLLMMaxToolTurns
+	cfg.LLMWebSearch = strings.ToLower(strings.TrimSpace(f.LLMWebSearch))
+	switch cfg.LLMWebSearch {
+	case "":
+		cfg.LLMWebSearch = "off"
+	case "off", "on-request", "always":
+	default:
+		return fmt.Errorf("llm_web_search must be off, on-request or always, got %q", f.LLMWebSearch)
+	}
+	cfg.LLMWebSearchImages = f.LLMWebSearchImages
+	cfg.LLMModel = strings.TrimSpace(f.LLMModel)
+	cfg.LLMReasoningEffort = strings.ToLower(strings.TrimSpace(f.LLMReasoningEffort))
+	if f.LLMMaxTokens != nil {
+		if *f.LLMMaxTokens < 1 {
+			return fmt.Errorf("llm_max_tokens must be at least 1, got %d", *f.LLMMaxTokens)
+		}
+		cfg.LLMMaxTokens = *f.LLMMaxTokens
+	}
+	if f.LLMMaxToolTurns != nil {
+		if *f.LLMMaxToolTurns < 0 {
+			return fmt.Errorf("llm_max_tool_turns must be 0 (no cap) or more, got %d", *f.LLMMaxToolTurns)
+		}
+		cfg.LLMMaxToolTurns = *f.LLMMaxToolTurns
+	}
+	switch cfg.LLMReasoningEffort {
+	case "", "low", "medium", "high":
+	default:
+		return fmt.Errorf("llm_reasoning_effort must be empty, low, medium or high, got %q", f.LLMReasoningEffort)
+	}
+	p := cfg.LLMProvider
+	if p == "" {
+		return nil
+	}
+	// The system prompt must be written down (even as ""), so a deployment
+	// never runs a prompt its operator didn't choose.
+	if f.LLMSystemPrompt == nil {
+		return errors.New(`llm_system_prompt is required when llm_provider is set (use llm_system_prompt: "" for none; config.example.yaml has one to start from)`)
+	}
+	cfg.LLMSystemPrompt = strings.TrimSpace(*f.LLMSystemPrompt)
+	if p == "echo" {
+		return nil
+	}
+	cfg.LLMBaseURL = strings.TrimRight(strings.TrimSpace(f.LLMBaseURL), "/")
+	if cfg.LLMBaseURL == "" {
+		cfg.LLMBaseURL = defaultLLMBaseURLs[p]
+	}
+	if !strings.HasPrefix(cfg.LLMBaseURL, "https://") && !strings.HasPrefix(cfg.LLMBaseURL, "http://") {
+		return fmt.Errorf("llm_base_url must start with https:// (or http:// for a local server), got %q", f.LLMBaseURL)
+	}
+	if cfg.LLMModel == "" {
+		return fmt.Errorf("llm_model is required for llm_provider %q, e.g. grok-4.3", p)
+	}
+	cfg.LLMAPIKey = strings.TrimSpace(getenv("LLM_API_KEY"))
+	if cfg.LLMAPIKey == "" {
+		return fmt.Errorf("LLM_API_KEY is not set (put the %s API key in .env)", p)
+	}
+	return nil
+}
 
 // Config is the validated bot configuration.
 type Config struct {
@@ -55,6 +150,33 @@ type Config struct {
 	YtdlpJSRuntime        string
 	YtdlpCookies          string        // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
 	YtdlpMinInterval      time.Duration // minimum time between yt-dlp runs; 0 = none
+	LLMProvider           string        // model behind the ask command; "" = off
+	LLMUserCooldown       time.Duration // between one user's questions; 0 = none (owners exempt)
+	LLMMaxConcurrent      int           // questions reaching the model at once
+	LLMHistoryMessages    int           // messages remembered per channel; 0 = no memory
+	LLMHistoryMaxAge      time.Duration // ...and only those newer than this; 0 = no age limit
+	LLMTimeout            time.Duration // per question, waiting included
+	LLMMaxPromptChars     int           // longest question, in characters; 0 = no limit
+	LLMDailyLimit         int           // per user per day; 0 = no limit
+	LLMDailyLimitOwners   bool          // owners are exempt unless true
+	LLMDailyResetLocation *time.Location
+	LLMWeightSearch       int // daily-limit cost of an answer that searched the web
+	LLMWeightImage        int // ...that viewed images
+	// DiscordMessageContent requests Discord's privileged Message Content
+	// intent (it must be enabled in the Developer Portal first). Only ask uses
+	// it, to read the message someone replies to when asking.
+	DiscordMessageContent bool
+
+	// The model bridge (ask); only used when LLMProvider is xai or openai.
+	LLMBaseURL         string
+	LLMModel           string
+	LLMAPIKey          string // from LLM_API_KEY; never logged
+	LLMSystemPrompt    string // "" = none
+	LLMMaxTokens       int    // answer cap, reasoning included
+	LLMReasoningEffort string // "" = the model's default
+	LLMWebSearch       string // "off", "on-request" (the asker says "search") or "always" (the model decides)
+	LLMWebSearchImages bool   // let search look at images it finds (xAI)
+	LLMMaxToolTurns    int    // rounds of tool use per question; 0 = no cap
 }
 
 // file mirrors config.yaml. IDs stay strings here and are parsed to snowflakes after decoding.
@@ -78,6 +200,27 @@ type file struct {
 	YtdlpJSRuntime        string   `yaml:"ytdlp_js_runtime"`
 	YtdlpCookies          string   `yaml:"ytdlp_cookies"`
 	YtdlpMinInterval      *string  `yaml:"ytdlp_min_interval"`
+	LLMProvider           string   `yaml:"llm_provider"`
+	LLMUserCooldown       *string  `yaml:"llm_user_cooldown"`
+	LLMMaxConcurrent      *int     `yaml:"llm_max_concurrent"`
+	LLMHistoryMessages    *int     `yaml:"llm_history_messages"`
+	LLMHistoryMaxAge      *string  `yaml:"llm_history_max_age"`
+	LLMTimeout            *string  `yaml:"llm_timeout"`
+	LLMMaxPromptChars     *int     `yaml:"llm_max_prompt_chars"`
+	LLMDailyLimit         *int     `yaml:"llm_daily_limit"`
+	LLMDailyLimitOwners   bool     `yaml:"llm_daily_limit_owners"`
+	LLMDailyResetTimezone string   `yaml:"llm_daily_reset_timezone"`
+	LLMWeightSearch       *int     `yaml:"llm_weight_search"`
+	LLMWeightImage        *int     `yaml:"llm_weight_image"`
+	DiscordMessageContent bool     `yaml:"discord_message_content"`
+	LLMBaseURL            string   `yaml:"llm_base_url"`
+	LLMModel              string   `yaml:"llm_model"`
+	LLMSystemPrompt       *string  `yaml:"llm_system_prompt"`
+	LLMMaxTokens          *int     `yaml:"llm_max_tokens"`
+	LLMReasoningEffort    string   `yaml:"llm_reasoning_effort"`
+	LLMWebSearch          string   `yaml:"llm_web_search"`
+	LLMWebSearchImages    bool     `yaml:"llm_web_search_images"`
+	LLMMaxToolTurns       *int     `yaml:"llm_max_tool_turns"`
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from path into the process environment.
@@ -154,6 +297,84 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		YtdlpJSRuntime:        f.YtdlpJSRuntime,
 		YtdlpCookies:          strings.TrimSpace(f.YtdlpCookies),
 		YtdlpMinInterval:      DefaultYtdlpMinInterval,
+		LLMProvider:           strings.ToLower(strings.TrimSpace(f.LLMProvider)),
+		LLMUserCooldown:       DefaultLLMUserCooldown,
+		LLMMaxConcurrent:      DefaultLLMMaxConcurrent,
+		LLMHistoryMessages:    DefaultLLMHistoryMessages,
+		LLMHistoryMaxAge:      DefaultLLMHistoryMaxAge,
+		LLMTimeout:            DefaultLLMTimeout,
+		LLMMaxPromptChars:     DefaultLLMMaxPromptChars,
+		LLMDailyLimit:         DefaultLLMDailyLimit,
+		LLMDailyLimitOwners:   f.LLMDailyLimitOwners,
+		LLMDailyResetLocation: time.UTC,
+		LLMWeightSearch:       DefaultLLMWeightSearch,
+		LLMWeightImage:        DefaultLLMWeightImage,
+		DiscordMessageContent: f.DiscordMessageContent,
+	}
+	if f.LLMTimeout != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.LLMTimeout))
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("llm_timeout must be a duration like \"60s\", got %q", *f.LLMTimeout)
+		}
+		cfg.LLMTimeout = d
+	}
+	nonNegative := []struct {
+		key string
+		in  *int
+		out *int
+	}{
+		{"llm_max_prompt_chars", f.LLMMaxPromptChars, &cfg.LLMMaxPromptChars},
+		{"llm_daily_limit", f.LLMDailyLimit, &cfg.LLMDailyLimit},
+		{"llm_weight_search", f.LLMWeightSearch, &cfg.LLMWeightSearch},
+		{"llm_weight_image", f.LLMWeightImage, &cfg.LLMWeightImage},
+	}
+	for _, n := range nonNegative {
+		if n.in == nil {
+			continue
+		}
+		if *n.in < 0 {
+			return Config{}, fmt.Errorf("%s must be 0 or more, got %d", n.key, *n.in)
+		}
+		*n.out = *n.in
+	}
+	if tz := strings.TrimSpace(f.LLMDailyResetTimezone); tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			return Config{}, fmt.Errorf("llm_daily_reset_timezone %q isn't a known timezone (use a name like \"Europe/Berlin\" or \"UTC\")", tz)
+		}
+		cfg.LLMDailyResetLocation = loc
+	}
+	if f.LLMHistoryMessages != nil {
+		if *f.LLMHistoryMessages < 0 {
+			return Config{}, fmt.Errorf("llm_history_messages must be 0 (no memory) or more, got %d", *f.LLMHistoryMessages)
+		}
+		cfg.LLMHistoryMessages = *f.LLMHistoryMessages
+	}
+	if f.LLMHistoryMaxAge != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.LLMHistoryMaxAge))
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("llm_history_max_age must be a duration like \"10m\" (0 = no age limit), got %q", *f.LLMHistoryMaxAge)
+		}
+		cfg.LLMHistoryMaxAge = d
+	}
+	if f.LLMUserCooldown != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*f.LLMUserCooldown))
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("llm_user_cooldown must be a duration like \"10s\" (0 = none), got %q", *f.LLMUserCooldown)
+		}
+		cfg.LLMUserCooldown = d
+	}
+	if f.LLMMaxConcurrent != nil {
+		if *f.LLMMaxConcurrent < 1 {
+			return Config{}, fmt.Errorf("llm_max_concurrent must be at least 1, got %d", *f.LLMMaxConcurrent)
+		}
+		cfg.LLMMaxConcurrent = *f.LLMMaxConcurrent
+	}
+	if p := cfg.LLMProvider; p != "" && !slices.Contains(LLMProviders, p) {
+		return Config{}, fmt.Errorf("llm_provider must be empty (off) or one of %s, got %q", strings.Join(LLMProviders, ", "), f.LLMProvider)
+	}
+	if err := parseLLMBridge(&cfg, f, getenv); err != nil {
+		return Config{}, err
 	}
 	if f.MaxConcurrentJobs != nil {
 		if *f.MaxConcurrentJobs < 1 {

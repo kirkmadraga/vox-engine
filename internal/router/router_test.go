@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/disgoorg/snowflake/v2"
@@ -51,10 +52,22 @@ func TestParse(t *testing.T) {
 	}
 }
 
-type fakeReplier struct{ got []commands.Reply }
+// fakeReplier records replies and, like Discord, gives each sent message a
+// new ID (reported through Reply.Sent).
+type fakeReplier struct {
+	got []commands.Reply
+	ids []snowflake.ID
+}
+
+var lastMessageID atomic.Int64
 
 func (f *fakeReplier) Reply(_ context.Context, r commands.Reply) error {
 	f.got = append(f.got, r)
+	id := snowflake.ID(5000 + lastMessageID.Add(1))
+	f.ids = append(f.ids, id)
+	if r.Sent != nil && !r.Private {
+		r.Sent(id)
+	}
 	return nil
 }
 
@@ -166,6 +179,10 @@ func TestHandleDebugLogsReasonNotContent(t *testing.T) {
 type fakeChecker struct {
 	owners []snowflake.ID
 	public []string
+}
+
+func (fakeChecker) ChannelAllowed(context.Context, snowflake.ID, string, ...snowflake.ID) bool {
+	return true
 }
 
 func (f fakeChecker) Allowed(_ context.Context, user, _ snowflake.ID, command string) bool {

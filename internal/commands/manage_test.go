@@ -27,7 +27,7 @@ type env struct {
 	policy *access.Policy
 	allow  Allow
 	deny   Deny
-	list   AccessList
+	list   Debug // "debug access"
 }
 
 func newEnv(backend access.Backend) env {
@@ -38,7 +38,7 @@ func newEnv(backend access.Backend) env {
 		Now:       func() time.Time { return time.Date(2026, 9, 29, 5, 0, 0, 0, time.UTC) },
 	})
 	known := func(c string) bool { return c == "ping" || c == "play" || c == "allow" }
-	return env{policy: p, allow: Allow{Access: p, Known: known}, deny: Deny{Access: p}, list: AccessList{Access: p}}
+	return env{policy: p, allow: Allow{Access: p, Known: known}, deny: Deny{Access: p}, list: Debug{Access: p}}
 }
 
 // run executes cmd as the owner in guildID and returns the single reply.
@@ -89,6 +89,13 @@ func TestParseTarget(t *testing.T) {
 		{"<@0>", target{}, false},
 		{"<@&2> play", target{}, false}, // role, not user
 		{"@friend", target{}, false},
+		{"ask", target{channel: true, command: "ask"}, true},
+		{"ASK <#500>", target{channel: true, channelID: 500, command: "ask"}, true},
+		{"ask 1100000000000000005", target{channel: true, channelID: 1100000000000000005, command: "ask"}, true},
+		{"ask #general", target{}, false},
+		{"ask <#0>", target{}, false},
+		{"ask <@500>", target{}, false}, // a user, not a channel
+		{"ask <#500> extra", target{}, false},
 	}
 	for _, c := range cases {
 		got, ok := parseTarget(c.in)
@@ -203,13 +210,13 @@ func TestSaveFailureReply(t *testing.T) {
 
 func TestAccessList(t *testing.T) {
 	e := newEnv(accesstest.NewMemory())
-	contains(t, run(t, e.list, ""), "none. Use `allow guild`")
+	contains(t, run(t, e.list, "access"), "none. Use `allow guild`")
 
 	run(t, e.allow, "guild")
 	run(t, e.allow, "<@2>")
 	e.policy.AllowGuild(context.Background(), 200, ownerID)
 
-	r := run(t, e.list, "")
+	r := run(t, e.list, "access")
 	for _, want := range []string{
 		"**Allowed servers** (2)",
 		"`100` (this server), added by <@1> <t:1790658000:d>",
@@ -242,4 +249,82 @@ func TestAllowInheritedCommand(t *testing.T) {
 	})
 	a := Allow{Access: p, Known: func(string) bool { return true }}
 	contains(t, run(t, a, "<@2> skip"), "`skip` comes with `play` access. Grant `play` instead.")
+}
+
+// runIn is run from a given channel.
+func runIn(t *testing.T, cmd Command, channel snowflake.ID, args string) Reply {
+	t.Helper()
+	rep := &fakeReplier{}
+	if err := cmd.Run(context.Background(), Request{GuildID: guildID, ChannelID: channel, AuthorID: ownerID, Args: args, Reply: rep}); err != nil {
+		t.Fatalf("Run(%q): %v", args, err)
+	}
+	if len(rep.got) != 1 || len(rep.got[0].Mentions) != 0 {
+		t.Fatalf("Run(%q): replies %+v, want one that pings no one", args, rep.got)
+	}
+	return rep.got[0]
+}
+
+func TestAllowDenyAskChannel(t *testing.T) {
+	e := newEnv(accesstest.NewMemory())
+	e.allow.ChannelVisible = func(id snowflake.ID) bool { return id == 500 }
+	ctx := context.Background()
+	askOK := func(ch snowflake.ID) bool {
+		snap, err := e.policy.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range snap.Channels {
+			if c.ChannelID == ch && c.Command == "ask" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// No channel given: the current one. A visible channel gets no note.
+	r := runIn(t, e.allow, 500, "ask")
+	if r.Content != "`ask` is now enabled in <#500>." {
+		t.Errorf("reply %q", r.Content)
+	}
+	contains(t, runIn(t, e.allow, 500, "ask <#500>"), "already enabled")
+	// By ID, from another channel (another server's channel works the same way).
+	contains(t, runIn(t, e.allow, 500, "ask 600"), "`ask` is now enabled in <#600>.")
+	contains(t, runIn(t, e.allow, 500, "ask 600"), "already enabled")
+	if !askOK(500) || !askOK(600) {
+		t.Fatal("channels not saved")
+	}
+
+	contains(t, runIn(t, e.deny, 700, "ask 600"), "`ask` is no longer enabled in <#600>.")
+	contains(t, runIn(t, e.deny, 700, "ask 600"), "wasn't enabled")
+	contains(t, runIn(t, e.deny, 500, "ask"), "no longer enabled in <#500>")
+	if askOK(500) || askOK(600) {
+		t.Error("channels still saved after deny")
+	}
+}
+
+func TestAllowAskUnseenChannelIsSavedWithANote(t *testing.T) {
+	e := newEnv(accesstest.NewMemory())
+	e.allow.ChannelVisible = func(snowflake.ID) bool { return false }
+	r := runIn(t, e.allow, 500, "ask 900")
+	contains(t, r, "now enabled in <#900>")
+	contains(t, r, "can't see channel `900`")
+	snap, _ := e.policy.Snapshot(context.Background())
+	if len(snap.Channels) != 1 || snap.Channels[0].ChannelID != 900 {
+		t.Errorf("channels = %+v", snap.Channels)
+	}
+}
+
+func TestAllowAskBadChannelShowsUsage(t *testing.T) {
+	e := newEnv(accesstest.NewMemory())
+	contains(t, runIn(t, e.allow, 500, "ask #general"), "allow ask [#channel or channel ID]")
+	contains(t, runIn(t, e.deny, 500, "ask nope"), "deny ask [#channel or channel ID]")
+}
+
+func TestAccessListsAskChannels(t *testing.T) {
+	e := newEnv(accesstest.NewMemory())
+	if strings.Contains(run(t, e.list, "access").Content, "Channels") {
+		t.Error("no channels: the section should be hidden")
+	}
+	runIn(t, e.allow, 500, "ask")
+	contains(t, run(t, e.list, "access"), "**Channels** (1)\n- `ask` in <#500> (`500`), added by <@1>")
 }

@@ -29,6 +29,98 @@ max_concurrent_searches: 1    # searches at the same time
 ytdlp_min_interval: 30s       # at least this long between YouTube downloads (0 = none)
 test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 
+# Experimental: the "ask" command (also "@Bot <anything that isn't a command>"),
+# answered by a language model. Off when unset. Providers: "xai" (Grok) or
+# "openai", both through their Responses API with the key in .env as
+# LLM_API_KEY; or "echo", a free stand-in that repeats the question, for trying
+# the command out. Grant it separately (allow @user ask) and enable it in a
+# channel (allow ask #channel); owners can use it anywhere. Questions, the
+# channel's recent ask conversation and any image go to the provider.
+# llm_provider: xai
+# llm_model: grok-4.3
+# llm_base_url: https://api.x.ai/v1 # the provider's default; change for a proxy or local server
+llm_max_tokens: 500        # longest answer, in tokens (xAI counts only the visible answer, not thinking)
+# llm_reasoning_effort: low  # low, medium or high, for models that think first; unset = model default
+# Web search: off; on-request (only when a question starts with "search", or
+# /ask search:True; recommended); or always (the model decides whether to search).
+# A search answer can cost 5-10x a plain one (search results are fed back in).
+llm_web_search: off
+llm_web_search_images: false # let search look at images it finds (xAI only)
+llm_max_tool_turns: 2      # rounds of tool use per question (0 = no cap); one round can run several searches
+# Required whenever llm_provider is set; "" for none. Keep the music part in
+# step with the bot's commands.
+llm_system_prompt: |
+  You are Vox Engine, a bot in a small Discord server of friends.
+
+  Style: casual and friendly, like a knowledgeable friend in the chat. Skip filler
+  ("Great question!", "I hope this helps") and don't repeat the question back.
+
+  Length: keep answers short by default: a few sentences or a short list. Go into
+  more detail only when someone asks for it, and even then stay under about 300
+  words. If a full answer would run much longer, give the condensed version with the
+  key points and say it's condensed. If a request can't be answered usefully at that
+  size at all (a whole field of science down to the atom, a full book summary),
+  say so in one line, then point to where to learn it properly: a well-known book,
+  course, site or search term, by name. Only give a link if you're sure it exists,
+  such as one from a search result or a Wikipedia article.
+
+  Format: Discord markdown. Use bullet lists and code blocks when they help; no
+  headings or tables.
+
+  Language: reply in the language the person wrote in, unless they ask for another.
+  Translate when asked.
+
+  Conversation: several people may talk to you in the same channel, and each
+  person's message starts with their name. Answer the latest message and use earlier
+  ones only as context. You only see messages sent to you, and only from the last
+  few minutes. A message someone replied to is quoted as [Replying to Name: "..."].
+
+  Web search: a question marked [search requested] may use web search: do so when
+  it helps, with a single focused search; don't browse multiple pages or pull long
+  content unless necessary, and keep the answer short. Without that mark you can't
+  search; if a question needs current information, say so briefly and suggest
+  asking again starting with "search".
+
+  Music: you're also this server's music bot, but you can't start music yourself.
+  If someone asks, explain the commands (they need to be in a voice channel):
+  - /play <YouTube link> or <Spotify track link>: queue that song
+  - /play <search words>: lists the top results; then /play <number> picks one
+  - /play with lucky set to true: plays the first good search result directly
+  - /queue shows what's up next, /skip skips the song, /stop clears the queue and leaves
+  Each also works as @Vox Engine <command>, e.g. "@Vox Engine play <song>".
+  If a command doesn't respond for someone, they may not have access; the bot's
+  owner can grant it.
+llm_user_cooldown: 10s    # between one person's questions (owners exempt; 0 = none)
+llm_max_concurrent: 3     # questions answered at once; more wait their turn.
+                          # Raising it lets more people ask at once but can
+                          # multiply spending in a burst.
+# Each channel's recent ask conversation, so follow-ups make sense. Kept in
+# memory only (never saved or logged; gone on restart); "@Bot forget" clears it.
+llm_history_messages: 10  # a question and its answer are two (0 = no memory)
+llm_history_max_age: 10m  # older messages are forgotten (0 = no age limit)
+llm_timeout: 60s          # per question, waiting in line included
+llm_max_prompt_chars: 500 # longest question (0 = no limit)
+# Daily allowance per person, across all servers. A plain answer costs 1; one
+# that searched the web or viewed images costs the weights below (both: added).
+# The last question of the day may overshoot; the debt comes off the next day.
+llm_daily_limit: 50                # 0 = no limit
+llm_daily_limit_owners: false      # owners are exempt unless true
+llm_daily_reset_timezone: UTC      # the allowance resets at midnight here, e.g. Europe/Berlin
+llm_weight_search: 8
+llm_weight_image: 4
+
+# Discord's "Message Content Intent" lets the bot read the message someone
+# replies to when they ask it (e.g. reply to a meme with "@Bot explain this").
+# Only ask uses it; music and every other command work without it, so leave it
+# off unless you run ask and want that. With it on, the bot receives the text
+# of every message in channels it can see; it only acts on and remembers
+# messages addressed to it, and logs none of them.
+# To turn it on: first enable Developer Portal > your app > Bot > Privileged
+# Gateway Intents > Message Content Intent, then set this to true. If this is
+# true while the portal switch is off, Discord refuses the connection and the
+# bot can't start. (Bots in 100+ servers need Discord's approval for it.)
+discord_message_content: false
+
 # Optional overrides; otherwise found on PATH.
 # ytdlp_path: ""
 # ffmpeg_path: ""

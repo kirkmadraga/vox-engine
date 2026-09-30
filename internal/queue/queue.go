@@ -3,10 +3,12 @@
 package queue
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -131,10 +133,56 @@ func (g *guildQueue) nudge() {
 
 type item struct {
 	Track
-	done   chan struct{} // closed when Load finishes
-	loaded Loaded
-	err    error
-	cancel context.CancelFunc // set while playing
+	done    chan struct{} // closed when Load finishes
+	loaded  Loaded
+	err     error
+	cancel  context.CancelFunc // set while playing
+	started time.Time          // when playback began; zero while loading (guarded by Manager.mu)
+}
+
+// Status is a read-only snapshot for the owner's debug command.
+type Status struct {
+	Slots     int // voice slots (servers in voice at once)
+	SlotsUsed int
+	Waiting   int // servers waiting for a voice slot
+	Guilds    []GuildStatus
+}
+
+// GuildStatus is one server's queue.
+type GuildStatus struct {
+	GuildID   snowflake.ID
+	Connected bool // in voice
+	Idle      bool // in voice with nothing to play
+	Current   *Track
+	Playing   time.Duration // how far into Current; 0 while it loads
+	Loading   bool          // Current is still downloading or being checked
+	Queued    int
+}
+
+// Status reports every server with a queue, a current track or a voice
+// connection, sorted by server ID.
+func (m *Manager) Status() Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := Status{Slots: cap(m.slot), SlotsUsed: len(m.active), Waiting: m.waiting}
+	for id, g := range m.guilds {
+		if g.current == nil && len(g.pending) == 0 && !g.connected {
+			continue
+		}
+		gs := GuildStatus{GuildID: id, Connected: g.connected, Idle: g.idle, Queued: len(g.pending)}
+		if it := g.current; it != nil {
+			t := it.Track
+			gs.Current = &t
+			if it.started.IsZero() {
+				gs.Loading = true
+			} else {
+				gs.Playing = time.Since(it.started)
+			}
+		}
+		s.Guilds = append(s.Guilds, gs)
+	}
+	slices.SortFunc(s.Guilds, func(a, b GuildStatus) int { return cmp.Compare(a.GuildID, b.GuildID) })
+	return s
 }
 
 // New builds a Manager. base bounds everything: cancel it on shutdown, then call Wait.
@@ -454,6 +502,9 @@ func (s *session) play(ctx context.Context, it *item) {
 	if loaded.OnStart != nil {
 		loaded.OnStart()
 	}
+	m.mu.Lock()
+	it.started = time.Now()
+	m.mu.Unlock()
 	frames, err := voice.PlayFile(ctx, m.clock, s.conn, loaded.Path)
 	log.Info("queue: track finished", "track", it.URL, "frames", frames, "err", err)
 	if err != nil && ctx.Err() == nil {

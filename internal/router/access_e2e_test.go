@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/disgoorg/snowflake/v2"
@@ -30,27 +31,33 @@ type e2e struct {
 	router *Router
 }
 
-func newE2E(t *testing.T) e2e {
+// newE2E builds the router like main does (fallback "ask"); extra commands are
+// registered too, e.g. the ask command.
+func newE2E(t *testing.T, extra ...commands.Command) e2e {
 	t.Helper()
 	policy := access.NewPolicy(accesstest.NewMemory(), access.Options{
-		Owners:    []snowflake.ID{e2eOwner},
-		Public:    []string{"ping"},
-		OwnerOnly: commands.ManagementCommands,
+		Owners:         []snowflake.ID{e2eOwner},
+		Public:         []string{"ping"},
+		OwnerOnly:      commands.ManagementCommands,
+		ChannelLimited: []string{commands.AskCommand},
+		Inherit:        map[string]string{commands.ForgetCommand: commands.AskCommand},
 	})
 	var reg *commands.Registry
 	known := func(name string) bool { _, ok := reg.Lookup(name); return ok }
-	reg, err := commands.NewRegistry(
+	reg, err := commands.NewRegistry(append([]commands.Command{
 		commands.Ping{},
 		commands.Allow{Access: policy, Known: known},
 		commands.Deny{Access: policy},
-		commands.AccessList{Access: policy},
+		commands.Debug{Access: policy},
 		named("play"), // stand-in so "play" can be granted before the real command exists
-	)
+	}, extra...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return e2e{t: t, router: New(func() snowflake.ID { return self }, reg, policy, logger)}
+	r := New(func() snowflake.ID { return self }, reg, policy, logger)
+	r.Fallback = commands.AskCommand
+	return e2e{t: t, router: r}
 }
 
 // send delivers "<@bot> text" from user in guild and returns the replies.
@@ -105,7 +112,7 @@ func TestE2EManagementIsOwnerOnly(t *testing.T) {
 	e := newE2E(t)
 	e.wantReply(e2eOwner, allowedG, "allow guild", "This server is now allowed.")
 
-	for _, cmd := range []string{"allow guild", "deny guild", "allow <@9>", "deny <@8>", "access"} {
+	for _, cmd := range []string{"allow guild", "deny guild", "allow <@9>", "deny <@8>", "debug", "debug access", "debug llm"} {
 		e.wantSilence(e2eStranger, allowedG, cmd)
 		e.wantSilence(e2eStranger, unlistedG, cmd)
 	}
@@ -151,4 +158,15 @@ type named string
 func (n named) Name() string { return string(n) }
 func (named) Run(ctx context.Context, req commands.Request) error {
 	return req.Reply.Reply(ctx, commands.Reply{})
+}
+
+// debug is owner-only: it can't be granted, and others get silence.
+func TestE2EDebugIsOwnerOnly(t *testing.T) {
+	e := newE2E(t)
+	e.wantReply(e2eOwner, allowedG, "allow guild", "This server is now allowed.")
+	e.wantReply(e2eOwner, allowedG, "allow <@8> debug", "`debug` is owner-only and can't be granted.")
+	e.wantSilence(e2eFriend, allowedG, "debug access")
+	if got := e.send(e2eOwner, allowedG, "debug access"); len(got) != 1 || !strings.Contains(got[0].Content, "**Allowed servers** (1)") {
+		t.Errorf("owner's debug access: %+v", got)
+	}
 }

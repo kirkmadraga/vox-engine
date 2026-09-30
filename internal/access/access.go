@@ -9,10 +9,14 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
-// Checker decides whether a user may run a command in a guild.
-// command is the lowercase command name as typed, which may not exist.
+// Checker decides whether a user may run a command in a guild, and then
+// whether in this channel. command is the lowercase command name as typed,
+// which may not exist.
 type Checker interface {
 	Allowed(ctx context.Context, userID, guildID snowflake.ID, command string) bool
+	// ChannelAllowed reports whether command may run in one of channelIDs (a
+	// channel, and a thread's parent). Commands without channel limits run anywhere.
+	ChannelAllowed(ctx context.Context, userID snowflake.ID, command string, channelIDs ...snowflake.ID) bool
 }
 
 // Backend stores the allow-lists. It knows nothing about owners or rules;
@@ -31,7 +35,12 @@ type Backend interface {
 	Revoke(ctx context.Context, userID snowflake.ID, command string) (changed bool, err error)
 	HasGrant(ctx context.Context, userID snowflake.ID, command string) (bool, error)
 
-	// Snapshot returns everything, sorted by guild ID, then user ID, then command.
+	// Channels where a channel-limited command may run.
+	AllowChannel(ctx context.Context, channelID snowflake.ID, command string, e Entry) (changed bool, err error)
+	DenyChannel(ctx context.Context, channelID snowflake.ID, command string) (changed bool, err error)
+	ChannelAllowed(ctx context.Context, channelID snowflake.ID, command string) (bool, error)
+
+	// Snapshot returns everything, sorted as Snapshot.Sort does.
 	Snapshot(ctx context.Context) (Snapshot, error)
 }
 
@@ -54,17 +63,28 @@ type GrantEntry struct {
 	Entry
 }
 
-// Snapshot is a sorted, read-only copy of the allow-lists.
-type Snapshot struct {
-	Guilds []GuildEntry
-	Grants []GrantEntry
+// ChannelEntry is one channel where a channel-limited command may run.
+type ChannelEntry struct {
+	ChannelID snowflake.ID
+	Command   string
+	Entry
 }
 
-// Sort puts a snapshot in the order Backend.Snapshot promises:
-// guilds by ID, grants by user ID then command.
+// Snapshot is a sorted, read-only copy of the allow-lists.
+type Snapshot struct {
+	Guilds   []GuildEntry
+	Grants   []GrantEntry
+	Channels []ChannelEntry
+}
+
+// Sort puts a snapshot in the order Backend.Snapshot promises: guilds by ID,
+// grants by user ID then command, channels by command then channel ID.
 func (s *Snapshot) Sort() {
 	slices.SortFunc(s.Guilds, func(a, b GuildEntry) int { return cmp.Compare(a.GuildID, b.GuildID) })
 	slices.SortFunc(s.Grants, func(a, b GrantEntry) int {
 		return cmp.Or(cmp.Compare(a.UserID, b.UserID), cmp.Compare(a.Command, b.Command))
+	})
+	slices.SortFunc(s.Channels, func(a, b ChannelEntry) int {
+		return cmp.Or(cmp.Compare(a.Command, b.Command), cmp.Compare(a.ChannelID, b.ChannelID))
 	})
 }

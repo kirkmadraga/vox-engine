@@ -635,3 +635,30 @@ func TestStoredLogsValidateTime(t *testing.T) {
 		t.Errorf("log: %s", buf.String())
 	}
 }
+
+// The owner's debug snapshot: size, songs, least recently used, downloads and
+// the spacing before the next one.
+func TestStatus(t *testing.T) {
+	clk := newClock()
+	c, _ := newCache(t, &fakeFetcher{}, func(o *Options) {
+		o.Now, o.MinInterval, o.MaxBytes, o.MaxAge = clk.Now, 30*time.Second, 1<<20, time.Hour
+	})
+	ctx := context.Background()
+	if s, err := c.Status(ctx); err != nil || s.Songs != 0 || s.NextDownloadIn != 0 || s.MaxBytes != 1<<20 || s.MaxAge != time.Hour {
+		t.Fatalf("empty: %+v, %v", s, err)
+	}
+	c.Get(ctx, "aaaaaaaaaaa")
+	first := clk.Now()
+	clk.add(10 * time.Second)
+	s, err := c.Status(ctx)
+	if err != nil || s.Songs != 1 || s.Bytes != int64(len("audio:aaaaaaaaaaa")) || !s.OldestUse.Equal(first) {
+		t.Errorf("after one download: %+v, %v", s, err)
+	}
+	if s.NextDownloadIn != 20*time.Second || s.Downloads != 0 || s.Downloading != 0 {
+		t.Errorf("spacing and downloads: %+v", s)
+	}
+	clk.add(time.Minute)
+	if s, _ := c.Status(ctx); s.NextDownloadIn != 0 {
+		t.Errorf("spacing long over: %v", s.NextDownloadIn)
+	}
+}

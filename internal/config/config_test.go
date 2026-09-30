@@ -298,3 +298,185 @@ func TestParseUnauthorizedMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLLMProvider(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil || cfg.LLMProvider != "" {
+		t.Errorf("default = %q, %v; want off", cfg.LLMProvider, err)
+	}
+	cfg, err = Parse([]byte("llm_provider: \" Echo \"\nllm_system_prompt: \"\"\n"), env(fakeToken))
+	if err != nil || cfg.LLMProvider != "echo" {
+		t.Errorf("echo = %q, %v", cfg.LLMProvider, err)
+	}
+	if _, err := Parse([]byte("llm_provider: gpt\n"), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "llm_provider") {
+		t.Errorf("unknown provider: err = %v", err)
+	}
+}
+
+func TestParseLLMLimits(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil || cfg.LLMUserCooldown != 10*time.Second || cfg.LLMMaxConcurrent != 3 {
+		t.Errorf("defaults = %v, %d, %v; want 10s, 3", cfg.LLMUserCooldown, cfg.LLMMaxConcurrent, err)
+	}
+	cfg, err = Parse([]byte("llm_user_cooldown: 0\nllm_max_concurrent: 1\n"), env(fakeToken))
+	if err != nil || cfg.LLMUserCooldown != 0 || cfg.LLMMaxConcurrent != 1 {
+		t.Errorf("custom = %v, %d, %v", cfg.LLMUserCooldown, cfg.LLMMaxConcurrent, err)
+	}
+	for _, yaml := range []string{"llm_user_cooldown: -1s\n", "llm_user_cooldown: soon\n", "llm_max_concurrent: 0\n"} {
+		if _, err := Parse([]byte(yaml), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "llm_") {
+			t.Errorf("%q: err = %v", yaml, err)
+		}
+	}
+}
+
+func TestParseLLMHistory(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil || cfg.LLMHistoryMessages != 10 || cfg.LLMHistoryMaxAge != 10*time.Minute {
+		t.Errorf("defaults = %d, %v, %v; want 10, 10m", cfg.LLMHistoryMessages, cfg.LLMHistoryMaxAge, err)
+	}
+	cfg, err = Parse([]byte("llm_history_messages: 0\nllm_history_max_age: 0\n"), env(fakeToken))
+	if err != nil || cfg.LLMHistoryMessages != 0 || cfg.LLMHistoryMaxAge != 0 {
+		t.Errorf("off = %d, %v, %v", cfg.LLMHistoryMessages, cfg.LLMHistoryMaxAge, err)
+	}
+	for _, yaml := range []string{"llm_history_messages: -1\n", "llm_history_max_age: -1m\n", "llm_history_max_age: long\n"} {
+		if _, err := Parse([]byte(yaml), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "llm_history") {
+			t.Errorf("%q: err = %v", yaml, err)
+		}
+	}
+}
+
+func TestParseLLMGuardrails(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMTimeout != 60*time.Second || cfg.LLMMaxPromptChars != 500 || cfg.LLMDailyLimit != 50 ||
+		cfg.LLMDailyLimitOwners || cfg.LLMDailyResetLocation != time.UTC || cfg.LLMWeightSearch != 8 || cfg.LLMWeightImage != 4 {
+		t.Errorf("defaults: %v %d %d %v %v %d %d", cfg.LLMTimeout, cfg.LLMMaxPromptChars, cfg.LLMDailyLimit,
+			cfg.LLMDailyLimitOwners, cfg.LLMDailyResetLocation, cfg.LLMWeightSearch, cfg.LLMWeightImage)
+	}
+	yaml := "llm_timeout: 90s\nllm_max_prompt_chars: 0\nllm_daily_limit: 0\nllm_daily_limit_owners: true\n" +
+		"llm_daily_reset_timezone: Asia/Tokyo\nllm_weight_search: 3\nllm_weight_image: 5\n"
+	cfg, err = Parse([]byte(yaml), env(fakeToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMTimeout != 90*time.Second || cfg.LLMMaxPromptChars != 0 || cfg.LLMDailyLimit != 0 || !cfg.LLMDailyLimitOwners ||
+		cfg.LLMDailyResetLocation.String() != "Asia/Tokyo" || cfg.LLMWeightSearch != 3 || cfg.LLMWeightImage != 5 {
+		t.Errorf("custom values not applied: %+v", cfg)
+	}
+	// Midnight in Tokyo is 15:00 UTC the day before.
+	if got := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC).In(cfg.LLMDailyResetLocation).Format("2006-01-02 15:04"); got != "2026-10-01 00:00" {
+		t.Errorf("Tokyo time: %s", got)
+	}
+	for yaml, want := range map[string]string{
+		"llm_timeout: 0\n":                         "llm_timeout",
+		"llm_timeout: soon\n":                      "llm_timeout",
+		"llm_max_prompt_chars: -1\n":               "llm_max_prompt_chars",
+		"llm_daily_limit: -5\n":                    "llm_daily_limit",
+		"llm_weight_image: -1\n":                   "llm_weight_image",
+		"llm_daily_reset_timezone: Mars/Olympus\n": "isn't a known timezone",
+	} {
+		if _, err := Parse([]byte(yaml), env(fakeToken)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %q", yaml, err, want)
+		}
+	}
+}
+
+func TestParseDiscordMessageContent(t *testing.T) {
+	if cfg, err := Parse([]byte(""), env(fakeToken)); err != nil || cfg.DiscordMessageContent {
+		t.Errorf("default must be off: %v, %v", cfg.DiscordMessageContent, err)
+	}
+	if cfg, err := Parse([]byte("discord_message_content: true\n"), env(fakeToken)); err != nil || !cfg.DiscordMessageContent {
+		t.Errorf("true: %v, %v", cfg.DiscordMessageContent, err)
+	}
+}
+
+// envWith is env plus LLM_API_KEY.
+func envWith(token, key string) func(string) string {
+	return func(k string) string {
+		switch k {
+		case "DISCORD_TOKEN":
+			return token
+		case "LLM_API_KEY":
+			return key
+		}
+		return ""
+	}
+}
+
+// The system prompt must be written down whenever the bridge is on; "" means none.
+func TestParseLLMSystemPromptRequired(t *testing.T) {
+	if _, err := Parse([]byte("llm_provider: echo\n"), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "llm_system_prompt is required") {
+		t.Errorf("missing prompt: err = %v", err)
+	}
+	cfg, err := Parse([]byte("llm_provider: echo\nllm_system_prompt: \"\"\n"), env(fakeToken))
+	if err != nil || cfg.LLMSystemPrompt != "" {
+		t.Errorf("empty prompt: %q, %v", cfg.LLMSystemPrompt, err)
+	}
+	cfg, err = Parse([]byte("llm_provider: echo\nllm_system_prompt: |\n  You are a bot.\n  Be brief.\n"), env(fakeToken))
+	if err != nil || cfg.LLMSystemPrompt != "You are a bot.\nBe brief." {
+		t.Errorf("block prompt: %q, %v", cfg.LLMSystemPrompt, err)
+	}
+	if _, err := Parse([]byte("llm_system_prompt: hi\n"), env(fakeToken)); err != nil {
+		t.Errorf("a prompt with the bridge off is fine: %v", err)
+	}
+}
+
+func TestParseLLMBridgeXAI(t *testing.T) {
+	base := "llm_provider: xai\nllm_system_prompt: \"\"\n"
+	if _, err := Parse([]byte(base), envWith(fakeToken, "k")); err == nil || !strings.Contains(err.Error(), "llm_model") {
+		t.Errorf("missing model: err = %v", err)
+	}
+	if _, err := Parse([]byte(base+"llm_model: grok-4.3\n"), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "LLM_API_KEY") {
+		t.Errorf("missing key: err = %v", err)
+	}
+	cfg, err := Parse([]byte(base+"llm_model: grok-4.3\nllm_web_search: On-Request\nllm_web_search_images: true\n"), envWith(fakeToken, " xai-secret "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMBaseURL != "https://api.x.ai/v1" || cfg.LLMModel != "grok-4.3" || cfg.LLMAPIKey != "xai-secret" ||
+		cfg.LLMMaxTokens != 500 || cfg.LLMMaxToolTurns != 2 || cfg.LLMWebSearch != "on-request" || !cfg.LLMWebSearchImages || cfg.LLMReasoningEffort != "" {
+		t.Errorf("xai config: %+v", cfg)
+	}
+	cfg, err = Parse([]byte("llm_provider: openai\nllm_system_prompt: \"\"\nllm_model: m\nllm_base_url: http://localhost:8080/v1/\n"+
+		"llm_max_tokens: 800\nllm_max_tool_turns: 0\nllm_reasoning_effort: Low\n"), envWith(fakeToken, "k"))
+	if err != nil || cfg.LLMBaseURL != "http://localhost:8080/v1" || cfg.LLMMaxTokens != 800 || cfg.LLMMaxToolTurns != 0 || cfg.LLMReasoningEffort != "low" {
+		t.Errorf("openai overrides: %+v, %v", cfg, err)
+	}
+	for yaml, want := range map[string]string{
+		"llm_max_tokens: 0\n":         "llm_max_tokens",
+		"llm_max_tool_turns: -1\n":    "llm_max_tool_turns",
+		"llm_reasoning_effort: max\n": "llm_reasoning_effort",
+		"llm_base_url: ftp://x\n":     "llm_base_url",
+	} {
+		if _, err := Parse([]byte(base+"llm_model: m\n"+yaml), envWith(fakeToken, "k")); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %q", yaml, err, want)
+		}
+	}
+}
+
+// The key must never show up in errors.
+func TestParseLLMErrorsNeverShowTheKey(t *testing.T) {
+	_, err := Parse([]byte("llm_provider: xai\nllm_system_prompt: \"\"\nllm_model: m\nllm_max_tokens: 0\n"), envWith(fakeToken, "xai-SECRET-123"))
+	if err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestParseLLMWebSearchModes(t *testing.T) {
+	cfg, err := Parse([]byte(""), env(fakeToken))
+	if err != nil || cfg.LLMWebSearch != "off" || cfg.LLMWeightSearch != 8 {
+		t.Errorf("defaults: %q, weight %d, %v", cfg.LLMWebSearch, cfg.LLMWeightSearch, err)
+	}
+	for _, mode := range []string{"off", "on-request", "always"} {
+		if cfg, err := Parse([]byte("llm_web_search: "+mode+"\n"), env(fakeToken)); err != nil || cfg.LLMWebSearch != mode {
+			t.Errorf("%s: %q, %v", mode, cfg.LLMWebSearch, err)
+		}
+	}
+	for _, bad := range []string{"true", "sometimes"} {
+		if _, err := Parse([]byte("llm_web_search: "+bad+"\n"), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "off, on-request or always") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+}

@@ -48,6 +48,21 @@ func (a Access) HasGrant(ctx context.Context, userID snowflake.ID, command strin
 	return a.exists(ctx, `SELECT 1 FROM grants WHERE user_id = ? AND command = ?`, int64(userID), command)
 }
 
+func (a Access) AllowChannel(ctx context.Context, channelID snowflake.ID, command string, e access.Entry) (bool, error) {
+	return changed(a.db.sql.ExecContext(ctx,
+		`INSERT INTO allowed_channels (channel_id, command, added_by, added_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (channel_id, command) DO NOTHING`,
+		int64(channelID), command, int64(e.AddedBy), formatTime(e.AddedAt)))
+}
+
+func (a Access) DenyChannel(ctx context.Context, channelID snowflake.ID, command string) (bool, error) {
+	return changed(a.db.sql.ExecContext(ctx, `DELETE FROM allowed_channels WHERE channel_id = ? AND command = ?`, int64(channelID), command))
+}
+
+func (a Access) ChannelAllowed(ctx context.Context, channelID snowflake.ID, command string) (bool, error) {
+	return a.exists(ctx, `SELECT 1 FROM allowed_channels WHERE channel_id = ? AND command = ?`, int64(channelID), command)
+}
+
 func (a Access) exists(ctx context.Context, query string, args ...any) (bool, error) {
 	var one int
 	err := a.db.sql.QueryRowContext(ctx, query, args...).Scan(&one)
@@ -82,26 +97,42 @@ func (a Access) Snapshot(ctx context.Context) (access.Snapshot, error) {
 		return snap, err
 	}
 
-	rows, err = a.db.sql.QueryContext(ctx, `SELECT user_id, command, added_by, added_at FROM grants`)
+	// Grants and channels share a shape: (ID, command, added_by, added_at).
+	err = a.idCommandRows(ctx, "grants", `SELECT user_id, command, added_by, added_at FROM grants`,
+		func(id snowflake.ID, cmd string, e access.Entry) {
+			snap.Grants = append(snap.Grants, access.GrantEntry{UserID: id, Command: cmd, Entry: e})
+		})
 	if err != nil {
 		return snap, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var user, by int64
-		var cmd, at string
-		if err := rows.Scan(&user, &cmd, &by, &at); err != nil {
-			return snap, err
-		}
-		t, err := parseTime(at)
-		if err != nil {
-			return snap, fmt.Errorf("grants %d/%s: %w", user, cmd, err)
-		}
-		snap.Grants = append(snap.Grants, access.GrantEntry{UserID: snowflake.ID(user), Command: cmd, Entry: access.Entry{AddedBy: snowflake.ID(by), AddedAt: t}})
-	}
-	if err := rows.Err(); err != nil {
+	err = a.idCommandRows(ctx, "allowed_channels", `SELECT channel_id, command, added_by, added_at FROM allowed_channels`,
+		func(id snowflake.ID, cmd string, e access.Entry) {
+			snap.Channels = append(snap.Channels, access.ChannelEntry{ChannelID: id, Command: cmd, Entry: e})
+		})
+	if err != nil {
 		return snap, err
 	}
 	snap.Sort() // Go-side sort matches the other backends exactly
 	return snap, nil
+}
+
+func (a Access) idCommandRows(ctx context.Context, table, query string, add func(snowflake.ID, string, access.Entry)) error {
+	rows, err := a.db.sql.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, by int64
+		var cmd, at string
+		if err := rows.Scan(&id, &cmd, &by, &at); err != nil {
+			return err
+		}
+		t, err := parseTime(at)
+		if err != nil {
+			return fmt.Errorf("%s %d/%s: %w", table, id, cmd, err)
+		}
+		add(snowflake.ID(id), cmd, access.Entry{AddedBy: snowflake.ID(by), AddedAt: t})
+	}
+	return rows.Err()
 }

@@ -29,6 +29,8 @@ const (
 	userB  snowflake.ID = 300000000000000001
 	guildA snowflake.ID = 1100000000000000003
 	guildB snowflake.ID = 200000000000000002
+	chanA  snowflake.ID = 1100000000000000004
+	chanB  snowflake.ID = 200000000000000003
 )
 
 // BackendContract runs the behaviour every access.Backend must have. Adding a
@@ -81,6 +83,26 @@ func BackendContract(t *testing.T, open Factory) {
 		}
 	})
 
+	t.Run("channel allow and deny", func(t *testing.T) {
+		b, _ := open(t)
+		expect(t, "allow", true)(b.AllowChannel(ctx, chanA, "ask", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "allow again", false)(b.AllowChannel(ctx, chanA, "ask", access.Entry{AddedBy: userA, AddedAt: t2}))
+		expect(t, "allow for another command", true)(b.AllowChannel(ctx, chanA, "image", access.Entry{AddedBy: owner, AddedAt: t1}))
+		if !channelOK(t, b, chanA, "ask") || channelOK(t, b, chanB, "ask") || channelOK(t, b, chanA, "play") {
+			t.Error("ChannelAllowed mismatch after allow")
+		}
+		snap := snap(t, b)
+		if len(snap.Channels) != 2 || snap.Channels[0].AddedBy != owner || !snap.Channels[0].AddedAt.Equal(t1) {
+			t.Errorf("second allow must not overwrite the original entry: %+v", snap.Channels)
+		}
+		expect(t, "deny", true)(b.DenyChannel(ctx, chanA, "ask"))
+		expect(t, "deny again", false)(b.DenyChannel(ctx, chanA, "ask"))
+		expect(t, "deny missing", false)(b.DenyChannel(ctx, chanB, "ask"))
+		if channelOK(t, b, chanA, "ask") || !channelOK(t, b, chanA, "image") {
+			t.Error("deny removed the wrong channel entry")
+		}
+	})
+
 	t.Run("deny guild keeps grants", func(t *testing.T) {
 		b, _ := open(t)
 		expect(t, "allow", true)(b.AllowGuild(ctx, guildA, access.Entry{AddedBy: owner, AddedAt: t1}))
@@ -98,6 +120,9 @@ func BackendContract(t *testing.T, open Factory) {
 		expect(t, "grant A play", true)(b.Grant(ctx, userA, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
 		expect(t, "grant A image", true)(b.Grant(ctx, userA, "image", access.Entry{AddedBy: owner, AddedAt: t2}))
 		expect(t, "grant B play", true)(b.Grant(ctx, userB, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "channel A ask", true)(b.AllowChannel(ctx, chanA, "ask", access.Entry{AddedBy: owner, AddedAt: t2}))
+		expect(t, "channel B ask", true)(b.AllowChannel(ctx, chanB, "ask", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "channel A image", true)(b.AllowChannel(ctx, chanA, "image", access.Entry{AddedBy: userA, AddedAt: t1}))
 
 		got := snap(t, b)
 		want := access.Snapshot{
@@ -109,6 +134,11 @@ func BackendContract(t *testing.T, open Factory) {
 				{UserID: userB, Command: "play", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
 				{UserID: userA, Command: "image", Entry: access.Entry{AddedBy: owner, AddedAt: t2}},
 				{UserID: userA, Command: "play", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
+			},
+			Channels: []access.ChannelEntry{
+				{ChannelID: chanB, Command: "ask", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
+				{ChannelID: chanA, Command: "ask", Entry: access.Entry{AddedBy: owner, AddedAt: t2}},
+				{ChannelID: chanA, Command: "image", Entry: access.Entry{AddedBy: userA, AddedAt: t1}},
 			},
 		}
 		if !snapshotsEqual(got, want) {
@@ -124,7 +154,13 @@ func BackendContract(t *testing.T, open Factory) {
 		expect(t, "grant B", true)(b.Grant(ctx, userB, "play", access.Entry{AddedBy: owner, AddedAt: t2}))
 		expect(t, "deny B", true)(b.DenyGuild(ctx, guildB))
 		expect(t, "revoke B", true)(b.Revoke(ctx, userB, "play"))
+		expect(t, "channel", true)(b.AllowChannel(ctx, chanA, "ask", access.Entry{AddedBy: owner, AddedAt: t2}))
+		expect(t, "channel B", true)(b.AllowChannel(ctx, chanB, "ask", access.Entry{AddedBy: owner, AddedAt: t2}))
+		expect(t, "deny channel B", true)(b.DenyChannel(ctx, chanB, "ask"))
 		before := snap(t, b)
+		if len(before.Channels) != 1 {
+			t.Fatalf("channels before reopen: %+v", before.Channels)
+		}
 
 		after := snap(t, reopen(t))
 		if !snapshotsEqual(before, after) {
@@ -156,8 +192,14 @@ func BackendContract(t *testing.T, open Factory) {
 }
 
 func snapshotsEqual(a, b access.Snapshot) bool {
-	if len(a.Guilds) != len(b.Guilds) || len(a.Grants) != len(b.Grants) {
+	if len(a.Guilds) != len(b.Guilds) || len(a.Grants) != len(b.Grants) || len(a.Channels) != len(b.Channels) {
 		return false
+	}
+	for i := range a.Channels {
+		x, y := a.Channels[i], b.Channels[i]
+		if x.ChannelID != y.ChannelID || x.Command != y.Command || x.AddedBy != y.AddedBy || !x.AddedAt.Equal(y.AddedAt) {
+			return false
+		}
 	}
 	for i := range a.Guilds {
 		x, y := a.Guilds[i], b.Guilds[i]
@@ -202,6 +244,15 @@ func guildOK(t *testing.T, b access.Backend, guildID snowflake.ID) bool {
 	ok, err := b.GuildAllowed(context.Background(), guildID)
 	if err != nil {
 		t.Fatalf("GuildAllowed: %v", err)
+	}
+	return ok
+}
+
+func channelOK(t *testing.T, b access.Backend, channelID snowflake.ID, command string) bool {
+	t.Helper()
+	ok, err := b.ChannelAllowed(context.Background(), channelID, command)
+	if err != nil {
+		t.Fatalf("ChannelAllowed: %v", err)
 	}
 	return ok
 }

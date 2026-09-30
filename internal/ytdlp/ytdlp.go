@@ -83,6 +83,7 @@ type Downloader struct {
 	Lock           sync.Locker      // optional: guards Cookies while it's copied or replaced; share with Searcher.Lock
 	Logger         *slog.Logger     // optional: timing per download, and cookies that couldn't be saved back
 	Now            func() time.Time // nil = time.Now; tests replace it
+	Recent         *Recent          // optional: remembers the last download (for debug)
 }
 
 // DefaultTimeout bounds one download.
@@ -143,6 +144,7 @@ type Result struct {
 func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 	t := newStageTimer(d.Now)
 	res, err := d.runFetch(ctx, id, dir, t)
+	d.Recent.setDownload(t.run(err))
 	if d.Logger != nil {
 		d.Logger.Info("ytdlp: download timing", t.attrs(id, err)...)
 	}

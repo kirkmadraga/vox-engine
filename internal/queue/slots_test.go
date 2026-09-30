@@ -321,3 +321,44 @@ func TestShutdownWhileIdleLeaves(t *testing.T) {
 	h.rec.waitFor(t, "leave 100")
 	h.m.Wait()
 }
+
+// The owner's debug snapshot: slots, who's playing (and how far in), queued
+// tracks, and servers waiting for a slot.
+func TestStatusSnapshot(t *testing.T) {
+	h := newSlotHarness(t, 2, 0)
+	if s := h.m.Status(); s.Slots != 2 || s.SlotsUsed != 0 || len(s.Guilds) != 0 {
+		t.Fatalf("empty: %+v", s)
+	}
+	h.play(t, 1, "a")
+	h.rec.waitFor(t, "holding 1")
+	h.play(t, 1, "a2") // queued behind a
+	h.play(t, 2, "b")
+	h.rec.waitFor(t, "holding 2")
+	h.play(t, 3, "c") // both slots busy: waits
+
+	var s Status
+	for range 200 {
+		if s = h.m.Status(); s.Waiting == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.Slots != 2 || s.SlotsUsed != 2 || s.Waiting != 1 || len(s.Guilds) != 3 {
+		t.Fatalf("status: %+v", s)
+	}
+	g1, g3 := s.Guilds[0], s.Guilds[2]
+	if g1.GuildID != 1 || !g1.Connected || g1.Current == nil || g1.Current.URL != "https://youtu.be/a" || g1.Loading || g1.Queued != 1 {
+		t.Errorf("guild 1: %+v", g1)
+	}
+	if g3.GuildID != 3 || g3.Connected || g3.Queued+btoi(g3.Current != nil) != 1 {
+		t.Errorf("guild 3 (waiting for a slot): %+v", g3)
+	}
+	h.conn.releaseAll()
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
