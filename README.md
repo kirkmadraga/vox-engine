@@ -75,7 +75,10 @@ On the machine that runs the bot (found on `PATH`, or set in `config.yaml`):
   pip/pipx as `yt-dlp[default]` so its YouTube challenge scripts are included.
 - **ffmpeg**, which yt-dlp uses to repackage the audio (no re-encoding).
 - **A JavaScript runtime for yt-dlp:** `deno` or `node` where the CPU supports
-  them, or `quickjs` on older CPUs. Set it as `ytdlp_js_runtime`.
+  them, or `quickjs` on older CPUs. Set it as `ytdlp_js_runtime`. On slow CPUs,
+  yt-dlp's challenge solving can take about a minute per new video (queued
+  tracks download in the background, so mostly only the first song after an
+  idle period waits).
 
 ### Build
 
@@ -113,32 +116,6 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
 It writes `cache/` (audio) and `data/bot.db` (access lists, cache index), and
 needs `assets/tone.opus` for `test`. How you keep it running (systemd, a
 scheduled task, a container) is up to you.
-
-### Hosting on a server: YouTube cookies
-
-YouTube blocks many datacenter IPs ("Sign in to confirm you're not a bot"). A
-home connection just works; on a server, give yt-dlp the login cookies of a
-**spare** Google account (accounts used this way can get flagged, so never use
-your main one):
-
-1. Open a private/incognito browser window and sign in to YouTube with the spare
-   account, then open `https://www.youtube.com/robots.txt` in that same tab.
-2. Export the youtube.com cookies in Netscape `cookies.txt` format, e.g. with the
-   open-source extension "Get cookies.txt LOCALLY" (enable it for private
-   windows; avoid look-alike extensions, some steal logins).
-3. Close the private window without signing out, so YouTube doesn't rotate the
-   exported cookies.
-4. Put the file on the server, readable and **writable** only by the bot, in a
-   folder the bot can write to (it saves refreshed cookies back and keeps
-   short-lived private copies next to the file), e.g. `data/cookies.txt`, and set
-   `ytdlp_cookies: ./data/cookies.txt`.
-
-Treat it like a password: never commit or share it. If downloads start failing
-with the bot-check error again, the cookies have expired: export new ones.
-
-On slow CPUs, yt-dlp's JavaScript challenge solving can take about a minute per
-new video (queued tracks download in the background, so mostly only the first
-song after an idle period waits).
 
 ## License
 

@@ -129,7 +129,9 @@ discord_message_content: false
 ytdlp_js_runtime: quickjs
 
 # Optional: YouTube login cookies (Netscape cookies.txt) for hosts YouTube blocks,
-# e.g. datacenter VPSes. Use a spare Google account. The bot saves refreshed cookies
-# back and keeps short-lived private copies next to the file, so the file and its
-# folder must be writable (keep it in data/). Never commit it.
+# e.g. datacenter VPSes. Use a spare Google account, never your main one. How to
+# export them: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies
+# The bot saves refreshed cookies back and keeps short-lived private copies next to
+# the file, so the file and its folder must be writable (keep it in data/). Treat it
+# like a password and never commit it; if downloads start failing again, re-export.
 # ytdlp_cookies: ./data/cookies.txt
