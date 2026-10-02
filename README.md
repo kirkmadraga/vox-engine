@@ -48,18 +48,6 @@ About `ask` (settings and comments in `config.example.yaml`):
   message in channels it can see, but acts on and remembers only those
   addressed to it.
 
-## How it works
-
-- Queue per server (limit configurable). One server in voice at a time by
-  default; `max_voice_sessions` allows more. The bot leaves when the queue
-  ends, or, with `voice_idle_timeout` set (e.g. `2m`), stays in voice that long
-  so the next song starts right away, giving way at once to another server
-  waiting for a voice slot. `stop` leaves immediately, and the queue is dropped
-  if someone disconnects the bot.
-- Audio is fetched once with yt-dlp, checked, and cached as Ogg Opus. The cache is
-  capped by size and by time since last played.
-- Access lists and the cache index live in one SQLite file.
-
 ## Running it
 
 ### Dependencies

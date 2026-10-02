@@ -8,15 +8,17 @@ owner_user_ids:
   - "111111111111111111"      # main
   - "222222222222222222"      # alt
 
-cache_dir: ./cache
+cache_dir: ./cache            # audio is fetched once with yt-dlp, checked, and kept here as Ogg Opus
 database: ./data/bot.db       # SQLite: access lists and the audio cache index
 cache_max_bytes: 536870912    # 512 MB total audio; least recently played goes first (0 = no cap)
 cache_max_age: 12h            # delete audio not played for this long (0 = never)
 max_duration_seconds: 0       # 0 = no limit
 max_queue_length: 10          # tracks per server, including the one playing
 search_results: 10            # results listed by "@Bot play <search words>" (1-10)
-max_voice_sessions: 1         # servers the bot plays in at the same time
-voice_idle_timeout: 0         # stay in voice this long after the queue ends, e.g. 2m (0 = leave at once)
+max_voice_sessions: 1         # servers the bot plays in at the same time; others wait for a slot
+# Stay in voice this long after the queue ends so the next song starts right away,
+# e.g. 2m (0 = leave at once). A server waiting for a voice slot still gets it at once.
+voice_idle_timeout: 0
 
 # Reply to a slash command from someone without access; only they see it.
 # (Mentions from them get no reply at all.)
