@@ -36,7 +36,8 @@ test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 # "openai", both through their Responses API with the key in .env as
 # LLM_API_KEY; or "echo", a free stand-in that repeats the question, for trying
 # the command out. Grant it separately (allow @user ask) and enable it in a
-# channel (allow ask #channel); owners can use it anywhere. Questions, the
+# channel (allow ask #channel); owners can use it anywhere. A reply to one of
+# its answers (with the reply's @ on) continues the conversation. Questions, the
 # channel's recent ask conversation and any image go to the provider.
 # llm_provider: xai
 # llm_model: grok-4.3
