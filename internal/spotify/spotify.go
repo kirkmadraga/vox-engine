@@ -73,7 +73,7 @@ func ParseTrackID(raw string) (string, error) {
 	if len(parts) != 2 {
 		return "", ErrNotSpotify
 	}
-	if parts[0] != "track" {
+	if !strings.EqualFold(parts[0], "track") { // like spotify: URIs, ignore case
 		return "", ErrNotTrack
 	}
 	if !idPattern.MatchString(parts[1]) {

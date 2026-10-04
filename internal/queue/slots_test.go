@@ -159,8 +159,7 @@ func TestTwoGuildsPlayAtOnceThirdWaits(t *testing.T) {
 	h.rec.waitFor(t, "join 3/300") // guild 1's slot went to guild 3
 	h.conn.release(2)
 	h.conn.release(3)
-	h.rec.waitFor(t, "leave 200")
-	h.rec.waitFor(t, "leave 300")
+	h.rec.waitForAll(t, "leave 200", "leave 300") // either may leave first
 }
 
 func TestKickStopSkipOnlyAffectTheirGuild(t *testing.T) {

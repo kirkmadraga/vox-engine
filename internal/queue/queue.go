@@ -1,5 +1,5 @@
 // Package queue plays tracks one after another, with one queue per guild and
-// one guild in voice at a time (the VPS keeps a single voice connection).
+// at most MaxSessions guilds in voice at a time (others wait for a slot).
 package queue
 
 import (
@@ -106,6 +106,7 @@ type Manager struct {
 	guilds  map[snowflake.ID]*guildQueue
 	active  map[snowflake.ID]bool // guilds holding a voice slot
 	waiting int                   // workers waiting for a voice slot
+	closed  bool                  // Wait has begun: start nothing new
 	wg      sync.WaitGroup
 }
 
@@ -215,8 +216,15 @@ func New(base context.Context, opts Options) *Manager {
 	return m
 }
 
-// Wait blocks until all playback and loading has stopped (after base is cancelled).
-func (m *Manager) Wait() { m.wg.Wait() }
+// Wait blocks until all playback and loading has stopped (after base is
+// cancelled). From then on Enqueue refuses, so nothing starts after Wait has
+// begun (sync.WaitGroup forbids that).
+func (m *Manager) Wait() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.wg.Wait()
+}
 
 func (m *Manager) guild(id snowflake.ID) *guildQueue {
 	g, ok := m.guilds[id]
@@ -229,10 +237,17 @@ func (m *Manager) guild(id snowflake.ID) *guildQueue {
 
 // Enqueue adds t to the guild's queue and starts loading it immediately.
 func (m *Manager) Enqueue(guildID snowflake.ID, t Track) (Position, error) {
+	m.mu.Lock()
+	// Checked under the lock Wait takes, so a task is either counted before
+	// Wait begins or never started.
+	if m.closed {
+		m.mu.Unlock()
+		return Position{}, context.Canceled
+	}
 	if err := m.base.Err(); err != nil {
+		m.mu.Unlock()
 		return Position{}, err
 	}
-	m.mu.Lock()
 	g := m.guild(guildID)
 	ahead := len(g.pending)
 	if g.current != nil {

@@ -8,6 +8,8 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/commands"
 )
 
+var _ commands.DailyBalances = (*DB)(nil)
+
 // DailyBalance implements commands.DailyBalances.
 func (s *DB) DailyBalance(ctx context.Context, user snowflake.ID) (day string, balance int, found bool, err error) {
 	err = s.sql.QueryRowContext(ctx, `SELECT day, balance FROM ask_balances WHERE user_id = ?`, int64(user)).Scan(&day, &balance)

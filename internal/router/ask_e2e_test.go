@@ -245,7 +245,7 @@ func TestE2EAskDailyLimit(t *testing.T) {
 	if store[e2eFriend] != -3 {
 		t.Errorf("balance %d, want -3", store[e2eFriend])
 	}
-	e.wantReply(e2eFriend, allowedG, "more", "You’ve hit your daily ask limit for today.")
+	e.wantReply(e2eFriend, allowedG, "more", "You've hit your daily ask limit for today.")
 	e.wantReply(e2eFriend, allowedG, "this question is far too long", "That's too long, keep it under 20 characters.")
 	e.wantReply(e2eOwner, allowedG, "owners [image]", "Echo: owners [image]") // exempt by default
 	if _, charged := store[e2eOwner]; charged {

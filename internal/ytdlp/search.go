@@ -58,13 +58,19 @@ type Searcher struct {
 
 func (s *Searcher) initSem() { s.sem = make(chan struct{}, max(s.MaxConcurrent, 1)) }
 
-// acquire waits for a free search slot; the returned func releases it.
-func (s *Searcher) acquire() func() {
+// acquire waits for a free search slot; the returned func releases it. It
+// gives up if ctx ends first, so a request that has run out of time doesn't
+// take a slot only to fail.
+func (s *Searcher) acquire(ctx context.Context) (release func(), err error) {
 	s.once.Do(s.initSem)
 	s.waiting.Add(1)
-	s.sem <- struct{}{}
-	s.waiting.Add(-1)
-	return func() { <-s.sem }
+	defer s.waiting.Add(-1)
+	select {
+	case s.sem <- struct{}{}:
+		return func() { <-s.sem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // searchFields are printed for every result, as one JSON object per line.
@@ -144,7 +150,13 @@ func (s *Searcher) search(ctx context.Context, kind, query string, n int, args f
 		now = time.Now
 	}
 	asked := now()
-	release := s.acquire()
+	release, err := s.acquire(ctx)
+	if err != nil { // no yt-dlp run, so nothing for the timing log or debug ytdlp
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &Error{Kind: KindTimeout, Detail: fmt.Sprintf("gave up waiting for a search slot after %v", round(now().Sub(asked)))}
+		}
+		return nil, err
+	}
 	defer release()
 	started := now()
 	defer func() {

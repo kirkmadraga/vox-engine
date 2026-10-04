@@ -146,7 +146,7 @@ type Config struct {
 	UnauthorizedMessage   string        // private reply to a slash command the user may not run
 	MaxDurationSeconds    int
 	YtdlpPath             string
-	FfmpegPath            string
+	FFmpegPath            string
 	YtdlpJSRuntime        string
 	YtdlpCookies          string        // optional cookies.txt for yt-dlp; must be writable (yt-dlp saves it back)
 	YtdlpMinInterval      time.Duration // minimum time between yt-dlp runs; 0 = none
@@ -196,7 +196,7 @@ type file struct {
 	UnauthorizedMessage   *string  `yaml:"unauthorized_message"`
 	MaxDurationSeconds    int      `yaml:"max_duration_seconds"`
 	YtdlpPath             string   `yaml:"ytdlp_path"`
-	FfmpegPath            string   `yaml:"ffmpeg_path"`
+	FFmpegPath            string   `yaml:"ffmpeg_path"`
 	YtdlpJSRuntime        string   `yaml:"ytdlp_js_runtime"`
 	YtdlpCookies          string   `yaml:"ytdlp_cookies"`
 	YtdlpMinInterval      *string  `yaml:"ytdlp_min_interval"`
@@ -293,7 +293,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		UnauthorizedMessage:   DefaultUnauthorizedMessage,
 		MaxDurationSeconds:    f.MaxDurationSeconds,
 		YtdlpPath:             f.YtdlpPath,
-		FfmpegPath:            f.FfmpegPath,
+		FFmpegPath:            f.FFmpegPath,
 		YtdlpJSRuntime:        f.YtdlpJSRuntime,
 		YtdlpCookies:          strings.TrimSpace(f.YtdlpCookies),
 		YtdlpMinInterval:      DefaultYtdlpMinInterval,
@@ -410,7 +410,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		msg := strings.TrimSpace(*f.UnauthorizedMessage)
 		switch {
 		case msg == "":
-			return Config{}, fmt.Errorf("unauthorized_message can't be empty (Discord needs some reply to a slash command); remove it to use the default")
+			return Config{}, errors.New("unauthorized_message can't be empty (Discord needs some reply to a slash command); remove it to use the default")
 		case len([]rune(msg)) > maxUnauthorizedMessageLen:
 			return Config{}, fmt.Errorf("unauthorized_message is longer than %d characters", maxUnauthorizedMessageLen)
 		}

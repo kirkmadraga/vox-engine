@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,23 @@ func (r *recorder) waitFor(t *testing.T, prefix string) string {
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for %q; events so far: %q", prefix, r.all())
+		}
+	}
+}
+
+// waitForAll blocks until an event with each prefix is recorded, in any
+// order. Use it for events that race each other: waitFor discards the events
+// it isn't looking for, so waiting for them one by one could miss one.
+func (r *recorder) waitForAll(t *testing.T, prefixes ...string) {
+	t.Helper()
+	missing := slices.Clone(prefixes)
+	deadline := time.After(3 * time.Second)
+	for len(missing) > 0 {
+		select {
+		case e := <-r.signal:
+			missing = slices.DeleteFunc(missing, func(p string) bool { return strings.HasPrefix(e, p) })
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q; events so far: %q", missing, r.all())
 		}
 	}
 }
@@ -273,8 +291,17 @@ func TestLoadFailureWhileWaitingIsReportedAndRemoved(t *testing.T) {
 	if msg != "msg 7: Couldn't add <https://youtu.be/private>: That video is private." {
 		t.Errorf("message = %q", msg)
 	}
-	if l := h.m.List(1); len(l.Upcoming) != 1 {
-		t.Errorf("failed track still queued: %+v", l.Upcoming)
+	// "one" may or may not have started playing yet: check by URL, not by count.
+	l := h.m.List(1)
+	queued := map[string]bool{}
+	if l.Current != nil {
+		queued[l.Current.URL] = true
+	}
+	for _, tr := range l.Upcoming {
+		queued[tr.URL] = true
+	}
+	if queued["https://youtu.be/private"] || !queued["https://youtu.be/one"] || !queued["https://youtu.be/three"] || len(queued) != 2 {
+		t.Errorf("after the failure: current %+v, upcoming %+v", l.Current, l.Upcoming)
 	}
 	close(hold)
 	h.rec.waitFor(t, "msg 7: Now playing: **three**")
@@ -358,6 +385,40 @@ func TestShutdownStopsPlaybackAndLeaves(t *testing.T) {
 	if _, err := h.m.Enqueue(1, track("late", 100, load("late", nil, nil))); err == nil {
 		t.Error("enqueue after shutdown should fail")
 	}
+}
+
+// Once Wait has begun nothing new starts, even before base is cancelled: a
+// task started then would break sync.WaitGroup's rules (Add during Wait).
+func TestEnqueueRefusedOnceWaitBegins(t *testing.T) {
+	h := newHarness(t, nil, 0)
+	h.m.Wait() // nothing running: returns at once
+	if _, err := h.m.Enqueue(1, track("late", 100, load("late", nil, nil))); !errors.Is(err, context.Canceled) {
+		t.Errorf("enqueue after Wait: err = %v, want context.Canceled", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if events := h.rec.all(); len(events) != 0 {
+		t.Errorf("a refused enqueue must start nothing: %q", events)
+	}
+	if l := h.m.List(1); l.Current != nil || len(l.Upcoming) != 0 {
+		t.Errorf("queue: %+v", l)
+	}
+}
+
+// Requests arriving while the bot shuts down either finish or are refused;
+// under -race this also checks no Add overlaps Wait.
+func TestEnqueueDuringShutdown(t *testing.T) {
+	h := newHarness(t, nil, 0)
+	var wg sync.WaitGroup
+	for g := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.m.Enqueue(snowflake.ID(g+1), track("x", 100, load("x", nil, nil)))
+		}()
+	}
+	h.cancel()
+	h.m.Wait()
+	wg.Wait()
 }
 
 func TestNameAndFormatting(t *testing.T) {

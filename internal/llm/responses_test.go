@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -254,6 +255,20 @@ func TestResponsesStatus(t *testing.T) {
 	}
 	if !strings.Contains(s.LastError, "HTTP 401") || strings.Contains(s.LastError, "TESTKEY") || s.LastErrorAt.IsZero() {
 		t.Errorf("last error: %q", s.LastError)
+	}
+}
+
+// A key straddling the cut point is removed before the cut, so no part of it
+// survives (in the error, and in debug llm's last error).
+func TestErrorsRedactBeforeCutting(t *testing.T) {
+	msg := strings.Repeat("x", 290) + testKey + " more"
+	if got := errorText([]byte(msg), testKey); strings.Contains(got, "xai-TEST") {
+		t.Errorf("errorText leaks part of the key: %q", got[280:])
+	}
+	r := &Responses{APIKey: testKey}
+	r.recordError(errors.New(strings.Repeat("y", 150) + testKey))
+	if s := r.Status().Stats.LastError; strings.Contains(s, "xai-TEST") {
+		t.Errorf("last error leaks part of the key: %q", s)
 	}
 }
 

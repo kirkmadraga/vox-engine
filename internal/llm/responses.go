@@ -16,6 +16,11 @@ import (
 	"unicode/utf8"
 )
 
+var (
+	_ Provider = (*Responses)(nil)
+	_ Reporter = (*Responses)(nil)
+)
+
 // Responses talks to an OpenAI-style Responses API (POST {BaseURL}/responses),
 // which xAI (Grok) and OpenAI both serve. Search tools run on the provider's
 // side; the answer reports what they used.
@@ -89,12 +94,12 @@ func (r *Responses) Status() Status {
 }
 
 func (r *Responses) recordError(err error) {
-	msg := shorten(err.Error(), 160)
+	msg := shorten(redact(err.Error(), r.APIKey), 160)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.stats.Errors++
 	r.stats.LastErrorAt = time.Now()
-	r.stats.LastError = redact(msg, r.APIKey)
+	r.stats.LastError = msg
 }
 
 func (r *Responses) recordAnswer(out response, a Answer, took time.Duration) {
@@ -352,7 +357,7 @@ func errorText(raw []byte, key string) string {
 			}
 		}
 	}
-	return redact(shorten(msg, 300), key)
+	return shorten(redact(msg, key), 300) // redact first: a cut could split the key
 }
 
 // shorten cuts s to at most n characters (never inside one), marking the cut.

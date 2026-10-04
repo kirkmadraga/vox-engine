@@ -31,6 +31,11 @@ type Debug struct {
 	Recent  *ytdlp.Recent
 	Started time.Time
 	Now     func() time.Time // nil = time.Now
+	// Version describes this build (version.Info's text); YtdlpVersion gives
+	// yt-dlp's, which can change while the bot runs (use a ytdlp.VersionCache:
+	// starting yt-dlp is slow). Both optional.
+	Version      string
+	YtdlpVersion func(context.Context) (string, error)
 }
 
 func (Debug) Name() string { return DebugCommand }
@@ -64,10 +69,42 @@ func (c Debug) Run(ctx context.Context, req Request) error {
 			out = FormatAccess(snap, req.GuildID)
 		}
 	default:
-		out = debugHelp
+		out = c.about(ctx) + "\n\n" + debugHelp
 	}
 	// No Mentions: user mentions render as names but never ping.
 	return req.Reply.Reply(ctx, Reply{Content: truncate(out, maxMessageLen)})
+}
+
+// about is the header of plain "debug": which build is running, with which
+// yt-dlp, for how long.
+func (c Debug) about(ctx context.Context) string {
+	build := c.Version
+	if build == "" {
+		build = "version unknown"
+	}
+	yt := "yt-dlp ?"
+	if c.YtdlpVersion != nil {
+		v, err := c.YtdlpVersion(ctx)
+		switch {
+		case err == nil:
+			yt = "yt-dlp " + v
+		case v != "": // the last version it knew, likely still right
+			yt = "yt-dlp " + v + " (couldn't check again: " + oneLine(err.Error(), 120) + ")"
+		default:
+			yt = "yt-dlp: couldn't ask for its version (" + oneLine(err.Error(), 120) + ")"
+		}
+	}
+	return fmt.Sprintf("**vox-engine** %s\n%s · up %s", build, yt, short(c.now().Sub(c.Started)))
+}
+
+// oneLine cuts s to at most limit characters on one line, for text inside a
+// line (truncate's marker starts a new line).
+func oneLine(s string, limit int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > limit {
+		return string(r[:limit]) + "…"
+	}
+	return s
 }
 
 func (c Debug) now() time.Time {

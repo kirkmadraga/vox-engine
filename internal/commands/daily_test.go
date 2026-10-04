@@ -102,6 +102,10 @@ func TestDailyWeights(t *testing.T) {
 			t.Errorf("Weight(%+v) = %d, want %d", u, got, want)
 		}
 	}
+	var off *DailyLimit // no limit configured: like its other methods, nil is safe
+	if got := off.Weight(llm.Usage{WebSearch: true}); got != 1 {
+		t.Errorf("nil Weight = %d, want 1", got)
+	}
 }
 
 func TestDailyBalanceStartsFullAndGoesIntoDebt(t *testing.T) {

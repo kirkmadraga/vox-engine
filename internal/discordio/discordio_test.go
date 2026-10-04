@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -20,7 +21,8 @@ type fakeSender struct {
 	msg      discord.MessageCreate
 	calls    int
 	sent     []discord.MessageCreate
-	failRefs bool // refuse replies, as Discord does when the replied-to message is gone
+	failRefs bool  // refuse replies, as Discord does when the replied-to message is gone
+	refErr   error // the error for a refused reply (default: Discord's 400)
 }
 
 func (f *fakeSender) CreateMessage(ch snowflake.ID, m discord.MessageCreate, _ ...rest.RequestOpt) (*discord.Message, error) {
@@ -28,7 +30,10 @@ func (f *fakeSender) CreateMessage(ch snowflake.ID, m discord.MessageCreate, _ .
 	f.calls++
 	f.sent = append(f.sent, m)
 	if f.failRefs && m.MessageReference != nil {
-		return nil, errors.New("unknown message")
+		if f.refErr != nil {
+			return nil, f.refErr
+		}
+		return nil, &rest.Error{Response: &http.Response{StatusCode: http.StatusBadRequest}, Code: 50035, Message: "Invalid Form Body"}
 	}
 	return &discord.Message{ID: snowflake.ID(100 + f.calls)}, nil
 }
@@ -96,6 +101,22 @@ func TestChannelReplierFallsBackWhenQuestionIsGone(t *testing.T) {
 	}
 	if s.calls != 2 || s.msg.MessageReference != nil || s.msg.Content != "answer" {
 		t.Errorf("calls=%d last=%+v", s.calls, s.msg)
+	}
+}
+
+// Any failed reply is re-sent as a plain message, not only Discord's refusal:
+// the operator prefers a rare double post to an answer that never shows.
+func TestChannelReplierRetriesAnyFailure(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		errors.New("connection reset"),
+		&rest.Error{Response: &http.Response{StatusCode: http.StatusBadGateway}},
+	} {
+		s := &fakeSender{failRefs: true, refErr: err}
+		got := (ChannelReplier{Sender: s, ChannelID: 1}).Reply(context.Background(), commands.Reply{Content: "answer", ReplyTo: 42})
+		if got != nil || s.calls != 2 || s.msg.MessageReference != nil {
+			t.Errorf("%v: err=%v calls=%d, want one plain re-send", err, got, s.calls)
+		}
 	}
 }
 

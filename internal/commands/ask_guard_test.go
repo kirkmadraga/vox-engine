@@ -154,6 +154,62 @@ func TestAskAnswerCappedAtThreeMessages(t *testing.T) {
 	}
 }
 
+// flakyReplier fails the sends listed in fail (counting from 1), then works.
+type flakyReplier struct {
+	calls int
+	fail  map[int]bool
+	got   []Reply
+}
+
+func (f *flakyReplier) Reply(_ context.Context, r Reply) error {
+	f.calls++
+	if f.fail[f.calls] {
+		return errors.New("discord: 503")
+	}
+	f.got = append(f.got, r)
+	return nil
+}
+
+// A later answer part that fails is sent once more (the first part's retry is
+// the replier's): a rare double post beats an answer cut short. A second
+// failure gives up, and the model is never asked again.
+func TestAskResendsAFailedPartOnce(t *testing.T) {
+	long := strings.Repeat("word ", 1200) // 6,000 characters: 3 parts
+	llmc := &fakeLLM{answer: long}
+	c := &Ask{LLM: llmc}
+	rep := &flakyReplier{fail: map[int]bool{2: true}} // part 2's first try
+	if err := c.Run(context.Background(), Request{ChannelID: 1, AuthorID: 8, Args: "essay", Reply: rep}); err != nil {
+		t.Fatalf("one failure should be retried: %v", err)
+	}
+	if len(rep.got) != 3 || rep.calls != 4 {
+		t.Errorf("sent %d parts in %d calls, want 3 in 4", len(rep.got), rep.calls)
+	}
+
+	rep = &flakyReplier{fail: map[int]bool{3: true, 4: true}} // part 3 fails twice
+	if err := c.Run(context.Background(), Request{ChannelID: 1, AuthorID: 8, Args: "essay", Reply: rep}); err == nil || rep.calls != 4 {
+		t.Errorf("err=%v calls=%d, want an error after one retry", err, rep.calls)
+	}
+	rep = &flakyReplier{fail: map[int]bool{1: true}} // the first part: the replier's job
+	if err := c.Run(context.Background(), Request{ChannelID: 1, AuthorID: 8, Args: "essay", Reply: rep}); err == nil || rep.calls != 1 {
+		t.Errorf("first part: err=%v calls=%d, want no retry here", err, rep.calls)
+	}
+	if n := len(llmc.got); n != 3 {
+		t.Errorf("model asked %d times for 3 questions; a retry must not ask again", n)
+	}
+}
+
+// A full-length third part still fits Discord's limit with the marker added.
+func TestCapAnswerFullLengthLastPart(t *testing.T) {
+	full := strings.Repeat("x", maxMessageLen)
+	got, cut := capAnswer([]string{full, full, full, "more"})
+	if !cut || len(got) != maxAnswerParts {
+		t.Fatalf("cut=%v parts=%d", cut, len(got))
+	}
+	if n := utf8.RuneCountInString(got[2]); n != maxMessageLen || !strings.HasSuffix(got[2], askCutShort) {
+		t.Errorf("last part: %d characters, marked=%v", n, strings.HasSuffix(got[2], askCutShort))
+	}
+}
+
 func TestCapAnswerLeavesShortAnswersAlone(t *testing.T) {
 	parts := []string{"a", "b", "c"}
 	if got, cut := capAnswer(parts); cut || !slices.Equal(got, parts) {

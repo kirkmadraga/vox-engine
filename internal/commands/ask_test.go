@@ -125,22 +125,30 @@ func TestAskNeverLogsContent(t *testing.T) {
 
 func TestSplitMessage(t *testing.T) {
 	cases := []struct {
-		in   string
-		max  int
-		want []string
+		in    string
+		limit int
+		want  []string
 	}{
 		{"", 5, nil},
 		{"  ", 5, nil},
 		{"hello", 5, []string{"hello"}},
 		{"hello world", 5, []string{"hello", "world"}},
-		{"ab cd\nef gh", 8, []string{"ab cd", "ef gh"}},   // line break preferred over space
-		{"abcdefghij", 4, []string{"abcd", "efgh", "ij"}}, // no break: hard cut
-		{"héllo wörld", 5, []string{"héllo", "wörld"}},    // counts characters, not bytes
+		{"ab cd\nef gh", 8, []string{"ab cd", "ef gh"}},    // line break preferred over space
+		{"abcdefghij", 4, []string{"abcd", "efgh", "ij"}},  // no break: hard cut
+		{"héllo wörld", 5, []string{"héllo", "wörld"}},     // counts characters, not bytes
+		{"abcdefgh ij", 4, []string{"abcd", "efgh", "ij"}}, // a space only after the limit: hard cut
+		{"ééééé", 2, []string{"éé", "éé", "é"}},            // multi-byte characters at every cut
 	}
 	for _, c := range cases {
-		got := splitMessage(c.in, c.max)
+		got := splitMessage(c.in, c.limit)
 		if strings.Join(got, "|") != strings.Join(c.want, "|") || len(got) != len(c.want) {
-			t.Errorf("splitMessage(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+			t.Errorf("splitMessage(%q, %d) = %q, want %q", c.in, c.limit, got, c.want)
 		}
+	}
+	// Discord-sized: 2,500 characters without a break, multi-byte at the cut.
+	long := strings.Repeat("a", maxMessageLen-1) + strings.Repeat("ñ", 501)
+	got := splitMessage(long, maxMessageLen)
+	if len(got) != 2 || utf8.RuneCountInString(got[0]) != maxMessageLen || !utf8.ValidString(got[0]) || got[0]+got[1] != long {
+		t.Errorf("long split: %d parts, first %d characters", len(got), utf8.RuneCountInString(got[0]))
 	}
 }

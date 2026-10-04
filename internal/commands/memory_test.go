@@ -50,6 +50,20 @@ func TestMemoryDropsTheOldestHalfAtOnce(t *testing.T) {
 	}
 }
 
+// An odd MaxMessages rounds down to whole question-and-answer pairs: 11 keeps
+// 5, like 10.
+func TestMemoryOddMaxMessages(t *testing.T) {
+	m := &ChannelMemory{MaxMessages: 11}
+	addN(m, 1, 1, 5)
+	if got := contents(m.History(1)); got != "q1 a1 q2 a2 q3 a3 q4 a4 q5 a5" {
+		t.Fatalf("5 exchanges: %s", got)
+	}
+	addN(m, 1, 6, 6)
+	if got := contents(m.History(1)); got != "q4 a4 q5 a5 q6 a6" {
+		t.Errorf("after the 6th (as with 10): %s", got)
+	}
+}
+
 func TestMemoryForgetsOldMessages(t *testing.T) {
 	clk := newClock()
 	m := &ChannelMemory{MaxMessages: 10, MaxAge: 10 * time.Minute, Now: clk.now}

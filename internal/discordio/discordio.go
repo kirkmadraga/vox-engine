@@ -13,7 +13,17 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/kirkmadraga/vox-engine/internal/commands"
+	"github.com/kirkmadraga/vox-engine/internal/queue"
 	"github.com/kirkmadraga/vox-engine/internal/router"
+)
+
+// Compile-time checks: Ask finds typing support with a type assertion, so a
+// drifting signature would otherwise fail silently.
+var (
+	_ commands.Replier         = ChannelReplier{}
+	_ commands.TypingIndicator = ChannelReplier{}
+	_ commands.Replier         = (*InteractionReplier)(nil)
+	_ queue.Notifier           = ChannelNotifier{}
 )
 
 // HandleTimeout bounds how long one message or slash command may take to
@@ -150,6 +160,9 @@ func (c ChannelReplier) Reply(ctx context.Context, r commands.Reply) error {
 		}
 		// Most likely the question was deleted meanwhile (Discord refuses
 		// replies to missing messages): send it as a plain message instead.
+		// Any failure is retried, the operator's choice: after a timeout or a
+		// 5xx the reply may have been posted after all, but a rare double post
+		// beats an answer that was paid for and never shown.
 		msg.MessageReference = nil
 		msg.AllowedMentions.RepliedUser = false
 	}

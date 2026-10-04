@@ -53,6 +53,34 @@ func TestDebugHelp(t *testing.T) {
 	}
 }
 
+// Plain "debug" starts with the build, yt-dlp's version (asked each time) and uptime.
+func TestDebugAbout(t *testing.T) {
+	asked := 0
+	d := Debug{Version: "v1.0.0 · commit 20e2e37 (2026-10-04 11:17 UTC) · Go 1.27.1 · disgo v0.19.6",
+		YtdlpVersion: func(context.Context) (string, error) { asked++; return "2026.09.27", nil },
+		Started:      debugNow.Add(-2*time.Hour - 14*time.Minute), Now: func() time.Time { return debugNow }}
+	out := runDebug(t, d, "")
+	want := "**vox-engine** v1.0.0 · commit 20e2e37 (2026-10-04 11:17 UTC) · Go 1.27.1 · disgo v0.19.6\nyt-dlp 2026.09.27 · up 2h 14m\n\n**debug** (owners only)"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("got:\n%s", out)
+	}
+	runDebug(t, d, "")
+	if asked != 2 {
+		t.Errorf("yt-dlp asked %d times for 2 debugs, want each time", asked)
+	}
+	d.YtdlpVersion = func(context.Context) (string, error) { return "", errors.New("not found") }
+	has(t, "yt-dlp failing", runDebug(t, d, ""), "yt-dlp: couldn't ask for its version (not found) · up")
+	d.YtdlpVersion = func(context.Context) (string, error) { return "2026.09.27", errors.New("timed out") }
+	has(t, "yt-dlp failing again", runDebug(t, d, ""), "yt-dlp 2026.09.27 (couldn't check again: timed out) · up")
+	long := strings.Repeat("x", 200) + "\nsecond line"
+	d.YtdlpVersion = func(context.Context) (string, error) { return "", errors.New(long) }
+	header, _, _ := strings.Cut(runDebug(t, d, ""), "\n\n")
+	if lines := strings.Split(header, "\n"); len(lines) != 2 || !strings.Contains(lines[1], "x…) · up") {
+		t.Errorf("a long error must stay on the header's line:\n%s", header)
+	}
+	has(t, "nothing set", runDebug(t, Debug{}, ""), "version unknown", "yt-dlp ?")
+}
+
 func TestDebugAccess(t *testing.T) {
 	e := newEnv(accesstest.NewMemory())
 	run(t, e.allow, "guild")

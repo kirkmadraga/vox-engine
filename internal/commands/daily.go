@@ -50,15 +50,8 @@ func (d *DailyLimit) Today(ctx context.Context) (rows []DailyRow, nextReset time
 		rows = append(rows, r)
 	}
 	slices.SortFunc(rows, func(a, b DailyRow) int { return cmp.Compare(a.User, b.User) })
-	loc := d.Location
-	if loc == nil {
-		loc = time.UTC
-	}
-	now := time.Now
-	if d.Now != nil {
-		now = d.Now
-	}
-	y, m, day := now().In(loc).Date()
+	loc := d.loc()
+	y, m, day := d.now().In(loc).Date()
 	return rows, time.Date(y, m, day+1, 0, 0, 0, 0, loc), nil
 }
 
@@ -87,6 +80,9 @@ type DailyLimit struct {
 
 // Weight is how much an answer with usage u costs.
 func (d *DailyLimit) Weight(u llm.Usage) int {
+	if d == nil {
+		return 1
+	}
 	w := 0
 	if u.WebSearch {
 		w += d.WeightSearch
@@ -149,13 +145,20 @@ func (d *DailyLimit) today(ctx context.Context, user snowflake.ID) (int, error) 
 
 // day is today's date where the limit resets.
 func (d *DailyLimit) day() string {
-	now := time.Now
+	return d.now().In(d.loc()).Format(time.DateOnly)
+}
+
+func (d *DailyLimit) now() time.Time {
 	if d.Now != nil {
-		now = d.Now
+		return d.Now()
 	}
-	loc := d.Location
-	if loc == nil {
-		loc = time.UTC
+	return time.Now()
+}
+
+// loc is where the day resets (UTC if unset).
+func (d *DailyLimit) loc() *time.Location {
+	if d.Location != nil {
+		return d.Location
 	}
-	return now().In(loc).Format(time.DateOnly)
+	return time.UTC
 }

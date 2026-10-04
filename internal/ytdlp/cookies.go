@@ -2,6 +2,7 @@ package ytdlp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,9 +51,13 @@ func checkoutCookies(path string, lock sync.Locker) (string, error) {
 // is gone afterwards either way.
 func checkinCookies(copyPath, path string, lock sync.Locker) error {
 	data, err := os.ReadFile(copyPath)
-	if err != nil || !bytes.HasPrefix(data, cookieHeader) {
+	if err != nil {
 		os.Remove(copyPath)
-		return fmt.Errorf("refreshed cookies look invalid; kept the old file (%v)", err)
+		return fmt.Errorf("read refreshed cookies; kept the old file: %w", err)
+	}
+	if !bytes.HasPrefix(data, cookieHeader) {
+		os.Remove(copyPath)
+		return errors.New("refreshed cookies look invalid; kept the old file")
 	}
 	if lock != nil {
 		lock.Lock()
@@ -79,7 +84,7 @@ func RemoveStaleCookieCopies(path string) error {
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("remove stale cookie copies: %v", errs)
+		return fmt.Errorf("remove stale cookie copies: %w", errors.Join(errs...))
 	}
 	return nil
 }

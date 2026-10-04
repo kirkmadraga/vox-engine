@@ -267,6 +267,26 @@ func TestAskOwnersStillGetOnlyOneFollowUp(t *testing.T) {
 	}
 }
 
+// Between a question finishing and its waiting follow-up taking over, a new
+// question must still be refused: the follow-up is about to run, and letting
+// the newcomer in would run two at once.
+func TestAskRefusesInTheHandoverGap(t *testing.T) {
+	c := &Ask{IsOwner: func(id snowflake.ID) bool { return id == askOwner }} // no cooldown
+	for _, user := range []snowflake.ID{8, askOwner} {
+		mine, _, refusal := c.admit(user)
+		if refusal != "" {
+			t.Fatalf("first: %q", refusal)
+		}
+		if _, prev, refusal := c.admit(user); prev == nil || refusal != "" {
+			t.Fatalf("follow-up: prev=%v refusal=%q", prev, refusal)
+		}
+		c.finish(user, mine) // the follow-up hasn't called promote yet
+		if _, _, refusal := c.admit(user); refusal != askQueueFull {
+			t.Errorf("user %d in the gap: refusal %q, want the queue-full message", user, refusal)
+		}
+	}
+}
+
 // With every slot busy, more questions wait their turn (no error), owners
 // included, and never more than MaxConcurrent reach the model at once.
 func TestAskMaxConcurrentQueuesTheRest(t *testing.T) {

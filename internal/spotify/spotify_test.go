@@ -21,6 +21,7 @@ func TestParseTrackID(t *testing.T) {
 		"<https://open.spotify.com/track/" + rickID + ">",
 		"https://open.spotify.com/intl-de/track/" + rickID,
 		"HTTPS://OPEN.SPOTIFY.COM/track/" + rickID,
+		"https://open.spotify.com/Track/" + rickID, // the kind ignores case, as in spotify: URIs
 		"spotify:track:" + rickID,
 		"  spotify:track:" + rickID + "  ",
 	} {

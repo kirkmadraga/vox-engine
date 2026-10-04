@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -83,7 +84,7 @@ func (e Echo) Complete(ctx context.Context, req Request) (Answer, error) {
 		return Answer{}, err
 	}
 	if len(conversation) == 0 {
-		return Answer{}, fmt.Errorf("echo: empty conversation")
+		return Answer{}, errors.New("echo: empty conversation")
 	}
 	q := conversation[len(conversation)-1].Content
 	if strings.Contains(q, "[slow]") {

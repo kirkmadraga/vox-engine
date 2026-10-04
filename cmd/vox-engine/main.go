@@ -1,4 +1,4 @@
-// Command bot is the entry point: load config, build the Discord client,
+// Command vox-engine is the entry point: load config, build the Discord client,
 // register handlers, and run until interrupted.
 package main
 
@@ -35,6 +35,7 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/router"
 	"github.com/kirkmadraga/vox-engine/internal/spotify"
 	"github.com/kirkmadraga/vox-engine/internal/store"
+	"github.com/kirkmadraga/vox-engine/internal/version"
 	"github.com/kirkmadraga/vox-engine/internal/voice"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
@@ -97,6 +98,8 @@ func intents(cfg config.Config) []gateway.Intents {
 
 // run holds all startup and shutdown logic so it can return errors instead of exiting.
 func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPath string) error {
+	build := version.Read()
+	logger.Info("starting", "version", build.Name(), "commit", build.Commit, "modified", build.Modified, "go", build.Go)
 	cfg, err := loadConfig(configPath, envPath)
 	if err != nil {
 		return err
@@ -148,12 +151,24 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		Recent:         ytRecent,
 		Runner:         ytdlp.ExecRunner{},
 		Path:           findTool(logger, "yt-dlp", cfg.YtdlpPath),
-		FFmpegLocation: findTool(logger, "ffmpeg", cfg.FfmpegPath),
+		FFmpegLocation: findTool(logger, "ffmpeg", cfg.FFmpegPath),
 		JSRuntime:      cfg.YtdlpJSRuntime,
 		Cookies:        cfg.YtdlpCookies,
 		MaxDuration:    time.Duration(cfg.MaxDurationSeconds) * time.Second,
 		Logger:         logger,
 	}
+	// yt-dlp's version, for "debug" and the log. Asked once now in the
+	// background (it takes seconds on a slow CPU), then kept for a while.
+	ytVersion := &ytdlp.VersionCache{Ask: downloader.Version}
+	go func() {
+		if v, err := ytVersion.Version(ctx); err != nil {
+			if ctx.Err() == nil { // not just a quick shutdown
+				logger.Warn("ytdlp: couldn't ask for its version", "err", err)
+			}
+		} else {
+			logger.Info("ytdlp: version", "version", v)
+		}
+	}()
 	searcher := &ytdlp.Searcher{
 		Recent:        ytRecent,
 		MaxConcurrent: cfg.MaxConcurrentSearches,
@@ -198,7 +213,8 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		return err
 	}
 	if size, err := audio.Size(ctx); err == nil {
-		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size, "max_bytes", cfg.CacheMaxBytes, "max_age", cfg.CacheMaxAge, "download_interval", cfg.YtdlpMinInterval)
+		logger.Info("audio cache", "dir", cfg.CacheDir, "bytes", size, "max_bytes", cfg.CacheMaxBytes,
+			"max_age", cfg.CacheMaxAge, "download_interval", cfg.YtdlpMinInterval)
 	}
 	youtube := func(id string) queue.LoadFunc {
 		return func(ctx context.Context) (queue.Loaded, error) {
@@ -267,7 +283,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	// Owner-only status ("debug …"), mentions only: not a slash command.
 	debug := commands.Debug{
 		Access: policy, Queue: q.Status, Cache: audio.Status, Search: searcher.Status, Recent: ytRecent,
-		Started: time.Now(),
+		Started: time.Now(), Version: build.String(), YtdlpVersion: ytVersion.Version,
 	}
 	// The LLM bridge: "ask", also reached by mentions that start with no command
 	// word. Off (not registered) unless llm_provider is set.
@@ -313,8 +329,8 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	r.Fallback = commands.AskCommand
 	r.IsAnswer = answers.Has
 	r.ThreadParent = func(id snowflake.ID) snowflake.ID {
-		if th, ok := client.Caches.GuildThread(id); ok {
-			return *th.ParentID() // never nil for threads
+		if th, ok := client.Caches.GuildThread(id); ok && th.ParentID() != nil {
+			return *th.ParentID()
 		}
 		return 0
 	}
@@ -339,7 +355,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	if err := client.OpenGateway(ctx); err != nil {
 		var closeErr *websocket.CloseError
 		if errors.As(err, &closeErr) && closeErr.Code == gateway.CloseEventCodeDisallowedIntent.Code {
-			return fmt.Errorf("Discord refused the Message Content intent (discord_message_content: true): turn it on in the Developer Portal > your app > Bot > Privileged Gateway Intents, or set discord_message_content: false")
+			return errors.New("Discord refused the Message Content intent (discord_message_content: true): turn it on in the Developer Portal > your app > Bot > Privileged Gateway Intents, or set discord_message_content: false")
 		}
 		return fmt.Errorf("connect to discord gateway: %w", err)
 	}

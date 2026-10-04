@@ -93,6 +93,10 @@ func (a Access) Snapshot(ctx context.Context) (access.Snapshot, error) {
 		}
 		snap.Guilds = append(snap.Guilds, access.GuildEntry{GuildID: snowflake.ID(guild), Entry: access.Entry{AddedBy: snowflake.ID(by), AddedAt: t}})
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return snap, err
+	}
 	if err := rows.Close(); err != nil {
 		return snap, err
 	}

@@ -3,6 +3,7 @@ package ytdlp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -164,7 +165,7 @@ func TestSearchTimingWaited(t *testing.T) {
 	clock := newFakeClock()
 	log, buf := logger()
 	s := &Searcher{Runner: &lineRunner{clock: clock, script: []step{{time.Second, strings.TrimSpace(zooLine)}}}, Logger: log, Now: clock.Now}
-	release := s.acquire() // the only slot is busy
+	release, _ := s.acquire(context.Background()) // the only slot is busy
 	done := make(chan struct{})
 	go func() {
 		s.SearchN(context.Background(), "q", 1)
@@ -212,12 +213,18 @@ func TestRecentRunsAndSearchStatus(t *testing.T) {
 	if dl.Took != 45600*time.Millisecond || dl.Extract != 41800*time.Millisecond || dl.Outcome != "ok" || dl.At.IsZero() || !se.At.IsZero() {
 		t.Errorf("after a download: %+v / %+v", dl, se)
 	}
+	// A failure before yt-dlp even runs still replaces it, with a time, so
+	// debug ytdlp shows the failure instead of "none yet".
+	d.Fetch(context.Background(), "not-an-id", "/tmp/dl")
+	if dl, _ := recent.Last(); dl.At.IsZero() || dl.Outcome == "ok" || dl.Took != 0 {
+		t.Errorf("after an early failure: %+v", dl)
+	}
 
 	s := &Searcher{Runner: &lineRunner{clock: clock, script: []step{{time.Second, strings.TrimSpace(zooLine)}}}, Now: clock.Now, Recent: recent, MaxConcurrent: 1}
 	if st := s.Status(); st != (SearchStatus{Max: 1}) {
 		t.Errorf("idle: %+v", st)
 	}
-	release := s.acquire() // the only slot is busy
+	release, _ := s.acquire(context.Background()) // the only slot is busy
 	done := make(chan struct{})
 	go func() { s.SearchN(context.Background(), "q", 1); close(done) }()
 	for range 200 {
@@ -238,5 +245,35 @@ func TestRecentRunsAndSearchStatus(t *testing.T) {
 	none.setSearch(Run{})
 	if a, b := none.Last(); !a.At.IsZero() || !b.At.IsZero() {
 		t.Error("nil Recent must be empty")
+	}
+}
+
+// A search whose request runs out of time while waiting for a slot gives up
+// then (as a timeout), without running yt-dlp or recording a run.
+func TestSearchGivesUpWaiting(t *testing.T) {
+	clock := newFakeClock()
+	recent := &Recent{}
+	runner := &lineRunner{clock: clock, script: []step{{time.Second, strings.TrimSpace(zooLine)}}}
+	s := &Searcher{Runner: runner, Now: clock.Now, Recent: recent, MaxConcurrent: 1}
+	release, _ := s.acquire(context.Background()) // the only slot is busy
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := s.SearchN(ctx, "q", 1)
+	var e *Error
+	if !errors.As(err, &e) || e.Kind != KindTimeout {
+		t.Fatalf("got %v, want a timeout", err)
+	}
+	if st := s.Status(); st.Waiting != 0 || st.Running != 1 {
+		t.Errorf("after giving up: %+v", st)
+	}
+	if _, se := recent.Last(); !se.At.IsZero() {
+		t.Errorf("recorded a run that never happened: %+v", se)
+	}
+
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	if _, err := s.SearchN(cancelled, "q", 1); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled: got %v", err)
 	}
 }

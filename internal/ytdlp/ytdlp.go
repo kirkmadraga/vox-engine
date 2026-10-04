@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Runner runs a program with arguments (never through a shell).
@@ -151,6 +152,22 @@ func (d Downloader) Fetch(ctx context.Context, id, dir string) (Result, error) {
 	return res, err
 }
 
+// Version asks yt-dlp for its version (e.g. "2026.09.27"). Starting yt-dlp
+// can take seconds on a slow CPU; VersionCache keeps the answer.
+func (d Downloader) Version(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stdout, _, err := d.Runner.Run(ctx, d.Path, []string{"--version"})
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp --version: %w", err)
+	}
+	v, _, _ := strings.Cut(strings.TrimSpace(string(stdout)), "\n")
+	if v == "" {
+		return "", errors.New("yt-dlp --version printed nothing")
+	}
+	return truncate(v, 40), nil
+}
+
 func (d Downloader) runFetch(ctx context.Context, id, dir string, t *stageTimer) (Result, error) {
 	if !ValidID(id) {
 		return Result{}, &Error{Kind: KindInvalid, Detail: "invalid video id " + strconv.Quote(id)}
@@ -234,9 +251,10 @@ func (d Downloader) runFetch(ctx context.Context, id, dir string, t *stageTimer)
 	return Result{}, &Error{Kind: KindFailed, Detail: "yt-dlp produced no file; stdout: " + truncate(string(stdout), 500) + " stderr: " + truncate(string(stderr), 500)}
 }
 
+// truncate cuts s to at most n characters (never inside one), marking the cut.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string([]rune(s)[:n]) + "…"
 }

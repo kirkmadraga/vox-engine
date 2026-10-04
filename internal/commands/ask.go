@@ -110,11 +110,11 @@ const (
 	askQueueFull  = "You already have a question waiting. I'll answer it right after this one."
 	askFailed     = "I couldn't get an answer right now. Details are in the bot's log."
 	askEmpty      = "I didn't get an answer for that one."
-	askDailyLimit = "You’ve hit your daily ask limit for today."
+	askDailyLimit = "You've hit your daily ask limit for today."
 	// An image question costs more; said when the rest of the allowance can't cover it.
-	askDailyLimitImage = "You don’t have enough of today’s ask limit left for a question with an image."
+	askDailyLimitImage = "You don't have enough of today's ask limit left for a question with an image."
 	// A search costs more still; said when the rest of the allowance can't cover it.
-	askDailyLimitSearch = "You don’t have enough of today’s ask limit left for a search. Ask without \"search\" to get an answer without one."
+	askDailyLimitSearch = "You don't have enough of today's ask limit left for a search. Ask without \"search\" to get an answer without one."
 	askCutShort         = "\n…(answer cut short)"
 )
 
@@ -333,7 +333,17 @@ func (c *Ask) Run(ctx context.Context, req Request) error {
 		if i == 0 {
 			r.ReplyTo, r.PingReplied = req.MessageID, true // notifies the asker, once
 		}
-		if err := req.Reply.Reply(ctx, r); err != nil {
+		err := req.Reply.Reply(ctx, r)
+		if err != nil && i > 0 && ctx.Err() == nil {
+			// Later parts get one more try here. The first part isn't retried
+			// here: on mentions the replier re-sends it as a plain message;
+			// on /ask it isn't re-sent, as a second try would become a
+			// follow-up and leave "thinking…" showing. The operator's choice:
+			// a rare double post beats an answer cut short after it was paid for.
+			log.Warn("ask: re-sending a part", "part", i+1, "err", err)
+			err = req.Reply.Reply(ctx, r)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -407,7 +417,7 @@ func (c *Ask) admit(user snowflake.ID) (mine chan struct{}, prev <-chan struct{}
 		c.users[user] = u
 	}
 	switch {
-	case u.running && u.waiting:
+	case u.waiting: // a follow-up is queued (its predecessor may have just finished)
 		return nil, nil, askQueueFull
 	case u.running:
 		u.waiting = true
@@ -515,22 +525,22 @@ func (c *Ask) logger() *slog.Logger {
 	return c.Logger
 }
 
-// splitMessage cuts s into parts of at most max characters, preferring to break
-// at a line break, then at a space. Parts are trimmed; empty ones are dropped.
-func splitMessage(s string, max int) []string {
+// splitMessage cuts s into parts of at most limit characters, preferring to
+// break at a line break, then at a space. Parts are trimmed; empty ones are dropped.
+func splitMessage(s string, limit int) []string {
 	var parts []string
 	rest := []rune(strings.TrimSpace(s))
 	for len(rest) > 0 {
-		if len(rest) <= max {
+		if len(rest) <= limit {
 			parts = append(parts, string(rest))
 			break
 		}
-		cut := lastIndex(rest[:max+1], '\n')
+		cut := lastIndex(rest[:limit+1], '\n')
 		if cut <= 0 {
-			cut = lastIndex(rest[:max+1], ' ')
+			cut = lastIndex(rest[:limit+1], ' ')
 		}
 		if cut <= 0 {
-			cut = max
+			cut = limit
 		}
 		if p := strings.TrimSpace(string(rest[:cut])); p != "" {
 			parts = append(parts, p)

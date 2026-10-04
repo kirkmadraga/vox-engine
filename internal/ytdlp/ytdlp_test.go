@@ -32,6 +32,69 @@ const vid = "jNQXAC9IVRw"
 
 var exitErr = errors.New("exit status 1")
 
+func TestVersion(t *testing.T) {
+	f := &fakeRunner{stdout: "2026.09.27\n"}
+	v, err := Downloader{Runner: f, Path: "yt-dlp"}.Version(context.Background())
+	if err != nil || v != "2026.09.27" || !slices.Equal(f.gotArgs, []string{"--version"}) {
+		t.Errorf("Version = %q, %v (args %q)", v, err, f.gotArgs)
+	}
+	for _, f := range []*fakeRunner{{err: exitErr}, {stdout: "  \n"}} {
+		if v, err := (Downloader{Runner: f, Path: "yt-dlp"}).Version(context.Background()); err == nil {
+			t.Errorf("want an error, got %q", v)
+		}
+	}
+}
+
+// The version is kept for the TTL; a failure isn't kept, so the next call asks again.
+func TestVersionCache(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	asks, fail := 0, false
+	c := &VersionCache{Now: func() time.Time { return now }, Ask: func(context.Context) (string, error) {
+		asks++
+		if fail {
+			return "", errors.New("timed out")
+		}
+		return fmt.Sprintf("v%d", asks), nil
+	}}
+	get := func() string {
+		v, err := c.Version(context.Background())
+		if err != nil {
+			return "error, last known " + v
+		}
+		return v
+	}
+	never := &VersionCache{Ask: func(context.Context) (string, error) { return "", errors.New("x") }}
+	if v, err := never.Version(context.Background()); err == nil || v != "" {
+		t.Errorf("never asked successfully: %q, %v", v, err)
+	}
+	if a, b := get(), get(); a != "v1" || b != "v1" || asks != 1 {
+		t.Errorf("within the TTL: %s, %s after %d asks", a, b, asks)
+	}
+	now = now.Add(DefaultVersionTTL)
+	if v := get(); v != "v2" {
+		t.Errorf("after the TTL: %s", v)
+	}
+	now = now.Add(DefaultVersionTTL)
+	fail = true
+	if v := get(); v != "error, last known v2" {
+		t.Errorf("failing after a success: %s", v)
+	}
+	fail = false
+	if v := get(); v != "v4" {
+		t.Errorf("a failure must not be kept: %s", v)
+	}
+}
+
+// Output quoted in errors is cut by characters, never inside one.
+func TestTruncate(t *testing.T) {
+	if got := truncate("héllo", 2); got != "hé…" {
+		t.Errorf("truncate = %q", got)
+	}
+	if got := truncate("short", 10); got != "short" {
+		t.Errorf("truncate = %q", got)
+	}
+}
+
 func TestFetchSuccess(t *testing.T) {
 	r := &fakeRunner{stdout: "VOXMETA False 19.5 Me at the zoo\nVOXFILE /tmp/dl/jNQXAC9IVRw.opus\n"}
 	d := Downloader{Runner: r, Path: "yt-dlp", JSRuntime: "node", FFmpegLocation: "/usr/bin/ffmpeg"}

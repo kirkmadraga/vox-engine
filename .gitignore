@@ -28,6 +28,9 @@ config.yaml
 # Local planning doc (kept up to date, not committed)
 /SPEC.md
 
+# Local code review notes (not committed)
+/REVIEW.MD
+
 # Small committed test fixtures
 !/internal/voice/testdata/*.opus
 !/assets/*.opus

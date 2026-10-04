@@ -66,7 +66,7 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 	}
 	self := r.selfID()
 	if self == 0 {
-		log.Debug("ignored", "reason", "not ready")
+		log.Debug("router: ignored", "reason", "not ready")
 		return
 	}
 	if q := msg.Quoted; q != nil {
@@ -85,7 +85,7 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 		// With the Message Content intent every chat message arrives here;
 		// only log those that were at least meant for the bot.
 		if pinged || (reason != reasonNoMention && reason != reasonEmpty) {
-			log.Debug("ignored", "reason", reason, "content_len", len(msg.Content))
+			log.Debug("router: ignored", "reason", reason, "content_len", len(msg.Content))
 		}
 		return
 	}
@@ -132,7 +132,7 @@ func (r *Router) dispatch(ctx context.Context, log *slog.Logger, msg Message, na
 		// channels ("@Bot hi") must not draw a reply.
 		if !fallback {
 			if err := reply.Reply(ctx, commands.Reply{Content: WrongChannelMessage(inv.Name)}); err != nil {
-				log.Error("reply failed", "err", err)
+				log.Error("router: reply failed", "err", err)
 			}
 		}
 		return
@@ -176,7 +176,7 @@ type Invocation struct {
 // level.
 func (r *Router) Check(ctx context.Context, inv Invocation) Verdict {
 	log := func(reason string) {
-		r.logger.Debug("ignored", "reason", reason, "user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
+		r.logger.Debug("router: ignored", "reason", reason, "user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
 	}
 	if !r.access.Allowed(ctx, inv.AuthorID, inv.GuildID, inv.Name) {
 		log("not allowed")
@@ -198,14 +198,14 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 	log := r.logger.With("user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
 	cmd, found := r.registry.Lookup(inv.Name)
 	if !found {
-		log.Debug("unknown command")
+		log.Debug("router: unknown command")
 		if err := reply.Reply(ctx, commands.Reply{Content: "unknown command"}); err != nil {
-			log.Error("reply failed", "err", err)
+			log.Error("router: reply failed", "err", err)
 		}
 		return
 	}
 
-	log.Info("dispatch")
+	log.Info("router: dispatch")
 	err := cmd.Run(ctx, commands.Request{
 		GuildID:    inv.GuildID,
 		ChannelID:  inv.ChannelID,
@@ -220,7 +220,7 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 		Quoted:     inv.Quoted,
 	})
 	if err != nil {
-		log.Error("command failed", "err", err)
+		log.Error("router: command failed", "err", err)
 	}
 }
 
