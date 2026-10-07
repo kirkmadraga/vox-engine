@@ -1,0 +1,94 @@
+# On a version tag push (v*): run the CI checks, then build Linux and Windows
+# zips (binary, example config and .env, test tone, LICENSE, README) and
+# publish them as a GitHub Release, with the tag's message as the notes.
+# Run by hand from the Actions tab for a dry run: the zips are attached to the
+# run for download, and nothing is published.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # to create the release
+    steps:
+      # Full history and tags, so go build stamps the tag as the version.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package
+        env:
+          CGO_ENABLED: "0"
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_TAG" = true ]; then
+            name="$TAG"
+            # The tag's own message, not the commit's.
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          else
+            name="dryrun-$(git rev-parse --short HEAD)"
+          fi
+          mkdir -p dist
+          for target in linux/amd64 windows/amd64; do
+            goos="${target%/*}" goarch="${target#*/}"
+            exe=vox-engine
+            [ "$goos" = windows ] && exe=vox-engine.exe
+            dir="build/vox-engine-$name"
+            rm -rf build
+            mkdir -p "$dir/assets"
+            GOOS="$goos" GOARCH="$goarch" go build -ldflags '-s -w' -o "$dir/$exe" ./cmd/vox-engine
+            if [ "$IS_TAG" = true ]; then
+              # The version the binary reports must be the tag.
+              got="$(go version -m "$dir/$exe" | awk '$1 == "mod" { print $3 }')"
+              [ "$got" = "$TAG" ] || { echo "binary says $got, tag is $TAG" >&2; exit 1; }
+            fi
+            cp config.example.yaml .env.example LICENSE README.md "$dir/"
+            cp assets/tone.opus "$dir/assets/"
+            zipfile="dist/vox-engine-$name-$goos-$goarch.zip"
+            (cd build && zip -r -q "../$zipfile" "vox-engine-$name")
+            # Exactly these files, and the Linux binary keeps its executable bit.
+            want="$(printf '%s\n' .env.example LICENSE README.md assets/tone.opus config.example.yaml "$exe" | sed "s|^|vox-engine-$name/|" | sort)"
+            got="$(zipinfo -1 "$zipfile" | grep -v '/$' | sort)"
+            [ "$got" = "$want" ] || { printf 'unexpected zip contents:\n%s\n' "$got" >&2; exit 1; }
+            if [ "$goos" = linux ]; then
+              zipinfo "$zipfile" "vox-engine-$name/$exe" | grep -q '^-rwx' || { echo "binary not executable" >&2; exit 1; }
+            fi
+          done
+          ls -l dist
+          if [ "$IS_TAG" = true ]; then
+            git tag -l --format='%(contents)' "$TAG" > dist/notes.md
+          fi
+
+      - name: Attach the zips to this run (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-dryrun
+          path: dist/*.zip
+          retention-days: 7
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/*.zip --title "$TAG" --notes-file dist/notes.md --verify-tag
