@@ -3,6 +3,7 @@ package discordio
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -171,6 +172,28 @@ func (c ChannelReplier) Reply(ctx context.Context, r commands.Reply) error {
 		reportSent(r, sent)
 	}
 	return err
+}
+
+// SendTo returns a function that sends a plain message to a channel, with the
+// same mention rules as ChannelReplier (for reminders, which answer no message).
+func SendTo(sender MessageSender) func(ctx context.Context, channelID snowflake.ID, r commands.Reply) error {
+	return func(ctx context.Context, channelID snowflake.ID, r commands.Reply) error {
+		return ChannelReplier{Sender: sender, ChannelID: channelID}.Reply(ctx, r)
+	}
+}
+
+// ChannelGone reports whether err means the bot can't post in that channel
+// any more: it was deleted, or the bot lost access or permission to send.
+func ChannelGone(err error) bool {
+	var re *rest.Error
+	if !errors.As(err, &re) {
+		return false
+	}
+	switch re.Code {
+	case rest.JSONErrorCodeUnknownChannel, rest.JSONErrorCodeMissingAccess, rest.JSONErrorCodeLackPermissionsToPerformAction:
+		return true
+	}
+	return false
 }
 
 // reportSent tells r.Sent (if any) which message was sent.

@@ -16,24 +16,18 @@ type grantKey struct {
 	command string
 }
 
-type channelKey struct {
-	channel snowflake.ID
-	command string
-}
-
 // Memory is a non-persistent Backend for tests.
 type Memory struct {
-	mu       sync.RWMutex
-	guilds   map[snowflake.ID]access.Entry
-	grants   map[grantKey]access.Entry
-	channels map[channelKey]access.Entry
+	mu     sync.RWMutex
+	guilds map[snowflake.ID]access.Entry
+	grants map[grantKey]access.Entry
 }
 
 var _ access.Backend = (*Memory)(nil)
 
 // NewMemory returns an empty in-memory backend.
 func NewMemory() *Memory {
-	return &Memory{guilds: map[snowflake.ID]access.Entry{}, grants: map[grantKey]access.Entry{}, channels: map[channelKey]access.Entry{}}
+	return &Memory{guilds: map[snowflake.ID]access.Entry{}, grants: map[grantKey]access.Entry{}}
 }
 
 func (m *Memory) AllowGuild(_ context.Context, guildID snowflake.ID, e access.Entry) (bool, error) {
@@ -92,35 +86,6 @@ func (m *Memory) HasGrant(_ context.Context, userID snowflake.ID, command string
 	return ok, nil
 }
 
-func (m *Memory) AllowChannel(_ context.Context, channelID snowflake.ID, command string, e access.Entry) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	k := channelKey{channelID, command}
-	if _, ok := m.channels[k]; ok {
-		return false, nil
-	}
-	m.channels[k] = e
-	return true, nil
-}
-
-func (m *Memory) DenyChannel(_ context.Context, channelID snowflake.ID, command string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	k := channelKey{channelID, command}
-	if _, ok := m.channels[k]; !ok {
-		return false, nil
-	}
-	delete(m.channels, k)
-	return true, nil
-}
-
-func (m *Memory) ChannelAllowed(_ context.Context, channelID snowflake.ID, command string) (bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	_, ok := m.channels[channelKey{channelID, command}]
-	return ok, nil
-}
-
 func (m *Memory) Snapshot(context.Context) (access.Snapshot, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -130,9 +95,6 @@ func (m *Memory) Snapshot(context.Context) (access.Snapshot, error) {
 	}
 	for k, e := range m.grants {
 		s.Grants = append(s.Grants, access.GrantEntry{UserID: k.user, Command: k.command, Entry: e})
-	}
-	for k, e := range m.channels {
-		s.Channels = append(s.Channels, access.ChannelEntry{ChannelID: k.channel, Command: k.command, Entry: e})
 	}
 	s.Sort()
 	return s, nil

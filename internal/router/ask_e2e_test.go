@@ -25,7 +25,6 @@ func newAskE2EWithMemory(t *testing.T, mem *commands.ChannelMemory) e2e {
 	e := newE2E(t, &commands.Ask{LLM: llm.Echo{}, Memory: mem, Answers: answers}, commands.Forget{Memory: mem})
 	e.router.IsAnswer = answers.Has
 	e.wantReply(e2eOwner, allowedG, "allow guild", "This server is now allowed.")
-	e.wantReply(e2eOwner, allowedG, "allow ask", "`ask` is now enabled in <#1>.") // e2e messages come from channel 1
 	return e
 }
 
@@ -47,36 +46,34 @@ func TestE2EAskRemembersAndForgets(t *testing.T) {
 		t.Errorf("another channel must have its own memory: %+v", got)
 	}
 
-	// forget shares ask's access: its grant and its channels.
+	// forget comes with ask's grant, and clears only the channel it's used in.
 	e.wantSilence(e2eStranger, allowedG, "forget")
-	if got := e.sendIn(e2eFriend, 2, "forget"); len(got) != 1 || got[0].Content != "`forget` isn't enabled in this channel." {
-		t.Errorf("forget outside ask channels: %+v", got)
+	if got := e.sendIn(e2eFriend, 2, "forget"); len(got) != 1 || got[0].Content != "Okay, I've forgotten this channel's conversation." {
+		t.Errorf("forget in channel 2: %+v", got)
 	}
+	e.wantReply(e2eFriend, allowedG, "still?", "Echo: still? (remembering 4 messages)")
 	e.wantReply(e2eFriend, allowedG, "forget", "Okay, I've forgotten this channel's conversation.")
 	e.wantReply(e2eFriend, allowedG, "again", "Echo: again")
 }
 
-func TestE2EAskIsDefaultDeny(t *testing.T) {
+// ask needs only an allowed server and the grant, in any channel: there's no
+// per-channel setup (removed in v1.1.0).
+func TestE2EAskWorksInEveryChannel(t *testing.T) {
 	e := newE2E(t, &commands.Ask{LLM: llm.Echo{}})
 	e.wantReply(e2eOwner, allowedG, "allow guild", "This server is now allowed.")
 	e.wantReply(e2eOwner, allowedG, "allow <@8> ask", "<@8> can now use `ask` in allowed servers.")
-	// Allowed server and a grant, but no ask channel yet.
-	e.wantReply(e2eFriend, allowedG, "ask what is jazz", "`ask` isn't enabled in this channel.")
-	e.wantSilence(e2eFriend, allowedG, "what is jazz")
-	e.wantReply(e2eOwner, allowedG, "what is jazz", "Echo: what is jazz") // owners bypass
-
-	// The operator enables it from another server, by channel ID.
-	e.wantReply(e2eOwner, unlistedG, "allow ask 1", "`ask` is now enabled in <#1>.")
-	e.wantReply(e2eFriend, allowedG, "what is jazz", "Echo: what is jazz")
-}
-
-// Server admins get no say: only owners manage ask channels.
-func TestE2EAskChannelsAreOwnerOnly(t *testing.T) {
-	e := newAskE2E(t)
-	e.wantReply(e2eOwner, allowedG, "allow <@8> ask", "<@8> can now use `ask` in allowed servers.")
-	e.wantSilence(e2eFriend, allowedG, "allow ask 2")
-	e.wantSilence(e2eFriend, allowedG, "deny ask")
-	e.wantReply(e2eFriend, allowedG, "what is jazz", "Echo: what is jazz") // unchanged
+	for _, ch := range []snowflake.ID{1, 2, 3} {
+		for _, text := range []string{"ask what is jazz", "what is jazz"} {
+			if got := e.sendIn(e2eFriend, ch, text); len(got) != 1 || got[0].Content != "Echo: what is jazz" {
+				t.Errorf("channel %d, %q: %+v", ch, text, got)
+			}
+			if got := e.sendIn(e2eStranger, ch, text); len(got) != 0 {
+				t.Errorf("no grant, channel %d, %q: want silence, got %+v", ch, text, got)
+			}
+		}
+	}
+	// The old channel setup is just an unknown form of allow now.
+	e.wantReply(e2eOwner, allowedG, "allow ask", "Usage: `allow guild [serverID]` (defaults to this server) or `allow @user [command]` (defaults to `play`).")
 }
 
 func TestE2EAskFallback(t *testing.T) {
@@ -171,8 +168,7 @@ func TestE2EReplyToAnAnswerContinues(t *testing.T) {
 		t.Errorf("reply to the reply's answer: %+v", again.got)
 	}
 
-	// Channel 2 is an ask channel too, so only the answer check can keep it quiet there.
-	e.wantReply(e2eOwner, allowedG, "allow ask 2", "`ask` is now enabled in <#2>.")
+	// ask works in channel 2 too, so only the answer check keeps it quiet there.
 	cases := []struct {
 		name    string
 		user    snowflake.ID
@@ -200,12 +196,6 @@ func TestE2EReplyToAnAnswerContinues(t *testing.T) {
 	// A reply that starts with a mention is an ordinary command.
 	if rep := e.replyTo(e2eFriend, 1, answer, "<@1000> ping"); len(rep.got) != 1 || rep.got[0].Content != "<@8> pong" {
 		t.Errorf("mention in a reply: %+v", rep.got)
-	}
-	// Once the channel is no longer an ask channel, replies there go quiet
-	// (like the fallback: no hint).
-	e.wantReply(e2eOwner, allowedG, "deny ask", "`ask` is no longer enabled in <#1>.")
-	if rep := e.replyTo(e2eFriend, 1, answer, "still there?"); len(rep.got) != 0 {
-		t.Errorf("reply in a disabled channel: %+v", rep.got)
 	}
 }
 
@@ -237,7 +227,6 @@ func TestE2EAskDailyLimit(t *testing.T) {
 		IsOwner: func(id snowflake.ID) bool { return id == e2eOwner }}
 	e := newE2E(t, &commands.Ask{LLM: llm.Echo{}, Daily: daily, MaxPromptChars: 20})
 	e.wantReply(e2eOwner, allowedG, "allow guild", "This server is now allowed.")
-	e.wantReply(e2eOwner, allowedG, "allow ask", "`ask` is now enabled in <#1>.")
 	e.wantReply(e2eOwner, allowedG, "allow <@8> ask", "<@8> can now use `ask` in allowed servers.")
 
 	e.wantReply(e2eFriend, allowedG, "news [search]", "Echo: news [search]") // 3 - 2 = 1

@@ -32,6 +32,7 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/discordio"
 	"github.com/kirkmadraga/vox-engine/internal/llm"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/remind"
 	"github.com/kirkmadraga/vox-engine/internal/router"
 	"github.com/kirkmadraga/vox-engine/internal/spotify"
 	"github.com/kirkmadraga/vox-engine/internal/store"
@@ -131,15 +132,13 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	for _, name := range commands.PlaybackCommands {
 		inherit[name] = "play" // test, queue, skip, stop: whoever may play may use them
 	}
-	inherit[commands.ForgetCommand] = commands.AskCommand // forget works where ask works
+	inherit[commands.ForgetCommand] = commands.AskCommand // whoever may ask may make it forget
 	policy := access.NewPolicy(db.Access(), access.Options{
 		Owners:    cfg.OwnerIDs,
 		Public:    []string{"ping"},
 		OwnerOnly: commands.ManagementCommands,
 		Inherit:   inherit,
-		// ask runs only in channels an owner allowed (see access.Policy).
-		ChannelLimited: []string{commands.AskCommand},
-		Logger:         logger,
+		Logger:    logger,
 	})
 	if snap, err := policy.Snapshot(ctx); err == nil {
 		logger.Info("database opened", "file", cfg.Database, "guilds", len(snap.Guilds), "grants", len(snap.Grants))
@@ -235,10 +234,8 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	client, err := disgo.New(cfg.Token,
 		bot.WithLogger(libLogger),
 		bot.WithGatewayConfigOpts(gateway.WithIntents(intents(cfg)...)),
-		// Voice states: play needs the caller's current channel. Channels
-		// (threads included): a thread counts as its parent for ask channels,
-		// and "allow ask" says when the bot can't see a channel.
-		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates, cache.FlagChannels)),
+		// Voice states only: play needs the caller's current channel.
+		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
 		bot.WithVoiceManagerConfigOpts(disgovoice.WithDaveSessionCreateFunc(dave.CreateFunc())),
 		bot.WithEventManagerConfigOpts(bot.WithAsyncEventsEnabled()),
 	)
@@ -260,6 +257,11 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 
 	recent := commands.NewRecentSearches(0, nil) // per-user results for "play <number>"
 
+	// Reminders: saved in the database, fired by the scheduler (started once
+	// the gateway is open, so sends work).
+	firer := &commands.RemindFirer{Allowed: policy.Allowed, Send: discordio.SendTo(client.Rest), Gone: discordio.ChannelGone, Logger: logger}
+	scheduler := &remind.Scheduler{Store: db, Fire: firer.Fire, Logger: logger}
+
 	// Allow validates command names against the registry it is part of.
 	var registry *commands.Registry
 	known := func(name string) bool { _, ok := registry.Lookup(name); return ok }
@@ -274,20 +276,21 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		commands.QueueList{Queue: q},
 		commands.Skip{Queue: q},
 		commands.Stop{Queue: q},
-		commands.Allow{Access: policy, Known: known, ChannelVisible: func(id snowflake.ID) bool {
-			_, ok := client.Caches.Channel(id)
-			return ok
-		}},
-		commands.Deny{Access: policy},
+		commands.Allow{Access: policy, Known: known},
+		// Taking away remindme, or a server, deletes the reminders that went with it.
+		commands.Deny{Access: policy, Reminders: db, Owners: cfg.OwnerIDs},
+		commands.RemindMe{Store: db, Location: cfg.ReminderLocation, Wake: scheduler.Wake, Logger: logger},
 	}
 	// Owner-only status ("debug …"), mentions only: not a slash command.
 	debug := commands.Debug{
 		Access: policy, Queue: q.Status, Cache: audio.Status, Search: searcher.Status, Recent: ytRecent,
 		Started: time.Now(), Version: build.String(), YtdlpVersion: ytVersion.Version,
+		Reminders: db, RemindStats: scheduler.Stats, FireStats: firer.Stats, RemindZone: cfg.ReminderLocation,
 	}
 	// The LLM bridge: "ask", also reached by mentions that start with no command
 	// word. Off (not registered) unless llm_provider is set.
-	grantable := []string{commands.DefaultGrantCommand} // the rest share play's grant, are public, or owner-only
+	// remindme has its own grant too: it pings people.
+	grantable := []string{commands.DefaultGrantCommand, commands.RemindCommand} // the rest share a grant, are public, or owner-only
 	askOn := cfg.LLMProvider != ""
 	// The channel's recent ask conversation (RAM only; see ChannelMemory).
 	memory := &commands.ChannelMemory{MaxMessages: cfg.LLMHistoryMessages, MaxAge: cfg.LLMHistoryMaxAge}
@@ -315,6 +318,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		}
 		cmds = append(cmds, askCmd, commands.Forget{Memory: memory})
 		debug.LLM, debug.Ask = provider, askCmd
+		firer.Ask = askCmd // reminders for people with ask (and allowance left) are worded by the model
 		// ask's own limit, plus time to send the reply (or the "couldn't answer" error).
 		discordio.HandleTimeout = max(discordio.HandleTimeout, cfg.LLMTimeout+15*time.Second)
 		grantable = append(grantable, commands.AskCommand) // its own grant: it may cost money
@@ -328,12 +332,6 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	r := router.New(client.ID, registry, policy, logger)
 	r.Fallback = commands.AskCommand
 	r.IsAnswer = answers.Has
-	r.ThreadParent = func(id snowflake.ID) snowflake.ID {
-		if th, ok := client.Caches.GuildThread(id); ok && th.ParentID() != nil {
-			return *th.ParentID()
-		}
-		return 0
-	}
 	client.AddEventListeners(
 		bot.NewListenerFunc(discordio.GuildMessageHandler(ctx, r, client.Rest, &discordio.ChannelTyping{Sender: client.Rest, Logger: logger})),
 		// Slash commands: same router, same access policy as mentions.
@@ -359,12 +357,15 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		}
 		return fmt.Errorf("connect to discord gateway: %w", err)
 	}
+	reminding := make(chan struct{})
+	go func() { scheduler.Run(ctx); close(reminding) }()
 	logger.Info("running; press Ctrl+C to stop")
 
 	<-ctx.Done()
 	logger.Info("shutting down")
 	q.Wait()     // ctx is cancelled, so playback stops, voice is left, and downloads end
 	audio.Wait() // and the cache's purge loop stops
+	<-reminding  // a reminder being sent is left for after the restart
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client.Close(closeCtx)

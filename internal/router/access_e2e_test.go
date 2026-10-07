@@ -36,11 +36,10 @@ type e2e struct {
 func newE2E(t *testing.T, extra ...commands.Command) e2e {
 	t.Helper()
 	policy := access.NewPolicy(accesstest.NewMemory(), access.Options{
-		Owners:         []snowflake.ID{e2eOwner},
-		Public:         []string{"ping"},
-		OwnerOnly:      commands.ManagementCommands,
-		ChannelLimited: []string{commands.AskCommand},
-		Inherit:        map[string]string{commands.ForgetCommand: commands.AskCommand},
+		Owners:    []snowflake.ID{e2eOwner},
+		Public:    []string{"ping"},
+		OwnerOnly: commands.ManagementCommands,
+		Inherit:   map[string]string{commands.ForgetCommand: commands.AskCommand},
 	})
 	var reg *commands.Registry
 	known := func(name string) bool { _, ok := reg.Lookup(name); return ok }

@@ -89,18 +89,30 @@ func TestParseTarget(t *testing.T) {
 		{"<@0>", target{}, false},
 		{"<@&2> play", target{}, false}, // role, not user
 		{"@friend", target{}, false},
-		{"ask", target{channel: true, command: "ask"}, true},
-		{"ASK <#500>", target{channel: true, channelID: 500, command: "ask"}, true},
-		{"ask 1100000000000000005", target{channel: true, channelID: 1100000000000000005, command: "ask"}, true},
-		{"ask #general", target{}, false},
-		{"ask <#0>", target{}, false},
-		{"ask <@500>", target{}, false}, // a user, not a channel
-		{"ask <#500> extra", target{}, false},
+		// Channel rules for ask were removed in v1.1.0: no channel targets.
+		{"ask", target{}, false},
+		{"ask <#500>", target{}, false},
 	}
 	for _, c := range cases {
 		got, ok := parseTarget(c.in)
 		if ok != c.ok || got != c.want {
 			t.Errorf("parseTarget(%q) = %+v, %v; want %+v, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// The old "allow/deny ask #channel" form now just shows the usage, which no
+// longer mentions channels.
+func TestAllowAskChannelIsGone(t *testing.T) {
+	e := newEnv(accesstest.NewMemory())
+	for _, c := range []struct {
+		cmd  Command
+		args string
+	}{{e.allow, "ask"}, {e.allow, "ask <#500>"}, {e.deny, "ask 600"}} {
+		r := run(t, c.cmd, c.args)
+		contains(t, r, "Usage:")
+		if strings.Contains(r.Content, "channel") {
+			t.Errorf("%s %q: usage still mentions channels: %s", c.cmd.Name(), c.args, r.Content)
 		}
 	}
 }
@@ -262,69 +274,4 @@ func runIn(t *testing.T, cmd Command, channel snowflake.ID, args string) Reply {
 		t.Fatalf("Run(%q): replies %+v, want one that pings no one", args, rep.got)
 	}
 	return rep.got[0]
-}
-
-func TestAllowDenyAskChannel(t *testing.T) {
-	e := newEnv(accesstest.NewMemory())
-	e.allow.ChannelVisible = func(id snowflake.ID) bool { return id == 500 }
-	ctx := context.Background()
-	askOK := func(ch snowflake.ID) bool {
-		snap, err := e.policy.Snapshot(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, c := range snap.Channels {
-			if c.ChannelID == ch && c.Command == "ask" {
-				return true
-			}
-		}
-		return false
-	}
-
-	// No channel given: the current one. A visible channel gets no note.
-	r := runIn(t, e.allow, 500, "ask")
-	if r.Content != "`ask` is now enabled in <#500>." {
-		t.Errorf("reply %q", r.Content)
-	}
-	contains(t, runIn(t, e.allow, 500, "ask <#500>"), "already enabled")
-	// By ID, from another channel (another server's channel works the same way).
-	contains(t, runIn(t, e.allow, 500, "ask 600"), "`ask` is now enabled in <#600>.")
-	contains(t, runIn(t, e.allow, 500, "ask 600"), "already enabled")
-	if !askOK(500) || !askOK(600) {
-		t.Fatal("channels not saved")
-	}
-
-	contains(t, runIn(t, e.deny, 700, "ask 600"), "`ask` is no longer enabled in <#600>.")
-	contains(t, runIn(t, e.deny, 700, "ask 600"), "wasn't enabled")
-	contains(t, runIn(t, e.deny, 500, "ask"), "no longer enabled in <#500>")
-	if askOK(500) || askOK(600) {
-		t.Error("channels still saved after deny")
-	}
-}
-
-func TestAllowAskUnseenChannelIsSavedWithANote(t *testing.T) {
-	e := newEnv(accesstest.NewMemory())
-	e.allow.ChannelVisible = func(snowflake.ID) bool { return false }
-	r := runIn(t, e.allow, 500, "ask 900")
-	contains(t, r, "now enabled in <#900>")
-	contains(t, r, "can't see channel `900`")
-	snap, _ := e.policy.Snapshot(context.Background())
-	if len(snap.Channels) != 1 || snap.Channels[0].ChannelID != 900 {
-		t.Errorf("channels = %+v", snap.Channels)
-	}
-}
-
-func TestAllowAskBadChannelShowsUsage(t *testing.T) {
-	e := newEnv(accesstest.NewMemory())
-	contains(t, runIn(t, e.allow, 500, "ask #general"), "allow ask [#channel or channel ID]")
-	contains(t, runIn(t, e.deny, 500, "ask nope"), "deny ask [#channel or channel ID]")
-}
-
-func TestAccessListsAskChannels(t *testing.T) {
-	e := newEnv(accesstest.NewMemory())
-	if strings.Contains(run(t, e.list, "access").Content, "Channels") {
-		t.Error("no channels: the section should be hidden")
-	}
-	runIn(t, e.allow, 500, "ask")
-	contains(t, run(t, e.list, "access"), "**Channels** (1)\n- `ask` in <#500> (`500`), added by <@1>")
 }

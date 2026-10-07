@@ -35,10 +35,6 @@ type Router struct {
 	access   access.Checker
 	logger   *slog.Logger
 
-	// ThreadParent, if set, returns a thread's parent channel (0 if channelID
-	// isn't a known thread), so a thread counts as its parent for channel limits.
-	ThreadParent func(channelID snowflake.ID) snowflake.ID
-
 	// IsAnswer, if set, reports whether a message is one of the fallback
 	// command's answers: a Discord reply to one that pings the bot (the
 	// reply's @ ping on) runs the fallback with the whole reply as its args,
@@ -78,7 +74,7 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 	pinged := slices.Contains(msg.Mentions, self)
 	if reason == reasonNoMention && pinged && r.replyToAnswer(msg) {
 		// Continuing a conversation: the whole reply is the question.
-		r.dispatch(ctx, log, msg, r.Fallback, strings.TrimSpace(msg.Content), true, reply)
+		r.dispatch(ctx, msg, r.Fallback, strings.TrimSpace(msg.Content), reply)
 		return
 	}
 	if reason != "" {
@@ -90,14 +86,12 @@ func (r *Router) Handle(ctx context.Context, msg Message, reply commands.Replier
 		return
 	}
 	name, args := splitCommand(text)
-	fallback := false
 	if _, known := r.registry.Lookup(name); !known && r.Fallback != "" {
 		if _, ok := r.registry.Lookup(r.Fallback); ok {
 			name, args = r.Fallback, text // "@Bot What is jazz?": the whole text, as typed
-			fallback = true
 		}
 	}
-	r.dispatch(ctx, log, msg, name, args, fallback, reply)
+	r.dispatch(ctx, msg, name, args, reply)
 }
 
 // replyToAnswer reports whether msg is a Discord reply to one of the
@@ -118,42 +112,14 @@ func (r *Router) replyToAnswer(msg Message) bool {
 	return ok
 }
 
-// dispatch checks access for command name and runs it. fallback marks an
-// invocation the user didn't name explicitly: refused in the wrong channel,
-// it stays silent instead of hinting.
-func (r *Router) dispatch(ctx context.Context, log *slog.Logger, msg Message, name, args string, fallback bool, reply commands.Replier) {
+// dispatch checks access for command name and runs it. A refusal is silent:
+// don't advertise the bot to unauthorized users.
+func (r *Router) dispatch(ctx context.Context, msg Message, name, args string, reply commands.Replier) {
 	inv := Invocation{GuildID: msg.GuildID, ChannelID: msg.ChannelID, AuthorID: msg.AuthorID, AuthorName: msg.AuthorName,
 		MessageID: msg.MessageID, Name: name, Args: args, Images: msg.Images, Quoted: msg.Quoted}
-	switch r.Check(ctx, inv) {
-	case Denied:
-		return // silent: don't advertise the bot to unauthorized users
-	case WrongChannel:
-		// Only an explicit "ask" gets the hint: ordinary chat in other
-		// channels ("@Bot hi") must not draw a reply.
-		if !fallback {
-			if err := reply.Reply(ctx, commands.Reply{Content: WrongChannelMessage(inv.Name)}); err != nil {
-				log.Error("router: reply failed", "err", err)
-			}
-		}
-		return
+	if r.Check(ctx, inv) {
+		r.Run(ctx, inv, reply)
 	}
-	r.Run(ctx, inv, reply)
-}
-
-// Verdict is the access policy's answer for one invocation.
-type Verdict int
-
-const (
-	Denied       Verdict = iota // not allowed at all: stay silent
-	Allowed                     // run it
-	WrongChannel                // allowed, but not in this channel
-)
-
-// WrongChannelMessage tells a user who may run command that it's not enabled
-// where they tried it. It doesn't list the allowed channels: the user may not
-// be able to see them.
-func WrongChannelMessage(command string) string {
-	return "`" + command + "` isn't enabled in this channel."
 }
 
 // Invocation is one command call, from a mention or a slash command.
@@ -167,30 +133,19 @@ type Invocation struct {
 	Args       string           // the command's argument text, as typed after the name
 	Lucky      bool             // /play's lucky option (slash only; see commands.Request)
 	Search     bool             // /ask's search option (slash only)
+	When       string           // /remindme set's when option (slash only)
 	Images     []commands.Image // the asker's attached images (mentions only)
 	Quoted     *commands.Quote  // the message replied to, if Discord included it
 }
 
-// Check applies the access policy to inv (the same for every way in): first
-// the guild and grant rules, then channel limits. A refusal is logged at debug
-// level.
-func (r *Router) Check(ctx context.Context, inv Invocation) Verdict {
-	log := func(reason string) {
-		r.logger.Debug("router: ignored", "reason", reason, "user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
-	}
+// Check applies the access policy to inv, the same for every way in and in
+// every channel. A refusal is logged at debug level.
+func (r *Router) Check(ctx context.Context, inv Invocation) bool {
 	if !r.access.Allowed(ctx, inv.AuthorID, inv.GuildID, inv.Name) {
-		log("not allowed")
-		return Denied
+		r.logger.Debug("router: ignored", "reason", "not allowed", "user", inv.AuthorID, "guild", inv.GuildID, "channel", inv.ChannelID, "command", inv.Name)
+		return false
 	}
-	var parent snowflake.ID
-	if r.ThreadParent != nil {
-		parent = r.ThreadParent(inv.ChannelID)
-	}
-	if !r.access.ChannelAllowed(ctx, inv.AuthorID, inv.Name, inv.ChannelID, parent) {
-		log("not enabled in this channel")
-		return WrongChannel
-	}
-	return Allowed
+	return true
 }
 
 // Run runs an allowed invocation's command, replying through reply.
@@ -216,6 +171,7 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 		Reply:      reply,
 		Lucky:      inv.Lucky,
 		Search:     inv.Search,
+		When:       inv.When,
 		Images:     inv.Images,
 		Quoted:     inv.Quoted,
 	})

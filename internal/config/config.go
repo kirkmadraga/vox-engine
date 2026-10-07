@@ -162,6 +162,9 @@ type Config struct {
 	LLMDailyResetLocation *time.Location
 	LLMWeightSearch       int // daily-limit cost of an answer that searched the web
 	LLMWeightImage        int // ...that viewed images
+	// ReminderLocation is where remindme's times are ("at 18:30"); the same
+	// as LLMDailyResetLocation unless reminder_timezone is set.
+	ReminderLocation *time.Location
 	// DiscordMessageContent requests Discord's privileged Message Content
 	// intent (it must be enabled in the Developer Portal first). Only ask uses
 	// it, to read the message someone replies to when asking.
@@ -212,6 +215,7 @@ type file struct {
 	LLMDailyResetTimezone string   `yaml:"llm_daily_reset_timezone"`
 	LLMWeightSearch       *int     `yaml:"llm_weight_search"`
 	LLMWeightImage        *int     `yaml:"llm_weight_image"`
+	ReminderTimezone      string   `yaml:"reminder_timezone"`
 	DiscordMessageContent bool     `yaml:"discord_message_content"`
 	LLMBaseURL            string   `yaml:"llm_base_url"`
 	LLMModel              string   `yaml:"llm_model"`
@@ -343,6 +347,14 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("llm_daily_reset_timezone %q isn't a known timezone (use a name like \"Europe/Berlin\" or \"UTC\")", tz)
 		}
 		cfg.LLMDailyResetLocation = loc
+	}
+	cfg.ReminderLocation = cfg.LLMDailyResetLocation
+	if tz := strings.TrimSpace(f.ReminderTimezone); tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			return Config{}, fmt.Errorf("reminder_timezone %q isn't a known timezone (use a name like \"Europe/Berlin\" or \"UTC\")", tz)
+		}
+		cfg.ReminderLocation = loc
 	}
 	if f.LLMHistoryMessages != nil {
 		if *f.LLMHistoryMessages < 0 {

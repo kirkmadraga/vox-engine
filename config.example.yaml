@@ -35,8 +35,8 @@ test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 # answered by a language model. Off when unset. Providers: "xai" (Grok) or
 # "openai", both through their Responses API with the key in .env as
 # LLM_API_KEY; or "echo", a free stand-in that repeats the question, for trying
-# the command out. Grant it separately (allow @user ask) and enable it in a
-# channel (allow ask #channel); owners can use it anywhere. A reply to one of
+# the command out. Grant it separately (allow @user ask); it then works in any
+# channel of an allowed server, capped by the limits below. A reply to one of
 # its answers (with the reply's @ on) continues the conversation. Questions, the
 # channel's recent ask conversation and any image go to the provider.
 # llm_provider: xai
@@ -93,6 +93,11 @@ llm_system_prompt: |
   Each also works as @Vox Engine <command>, e.g. "@Vox Engine play <song>".
   If a command doesn't respond for someone, they may not have access; the bot's
   owner can grant it.
+
+  Reminders: you can't set them yourself. If someone asks, point them to
+  /remindme (or "@Vox Engine remindme in 2h stretch"); "@Vox Engine remindme"
+  alone lists the formats. A message marked [reminder] is one firing now: word
+  it as asked.
 llm_user_cooldown: 10s    # between one person's questions (owners exempt; 0 = none)
 llm_max_concurrent: 3     # questions answered at once; more wait their turn.
                           # Raising it lets more people ask at once but can
@@ -111,6 +116,14 @@ llm_daily_limit_owners: false      # owners are exempt unless true
 llm_daily_reset_timezone: UTC      # the allowance resets at midnight here, e.g. Europe/Berlin
 llm_weight_search: 8
 llm_weight_image: 4
+
+# Reminders: "remindme <when> <what>" pings that person in the channel where
+# they set it (its own grant: allow @user remindme). Times like "at 18:30" are
+# in this timezone; unset, it's llm_daily_reset_timezone's. Up to 10 reminders
+# per person, repeats at least an hour apart; they're saved in the database.
+# For people who also have ask and allowance left, the model words the
+# reminder (costing 1, like a plain answer); otherwise it's their own text.
+# reminder_timezone: Europe/Berlin
 
 # Discord's "Message Content Intent" lets the bot read the message someone
 # replies to when they ask it (e.g. reply to a meme with "@Bot explain this").

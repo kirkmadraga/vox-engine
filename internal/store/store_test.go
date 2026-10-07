@@ -113,7 +113,7 @@ func TestAccessAndCacheShareOneFile(t *testing.T) {
 }
 
 // A database from the build before ask channels (schema 1) upgrades in place:
-// its guilds and grants survive, and channels work afterwards.
+// its guilds and grants survive.
 func TestUpgradeFromSchema1KeepsAccessLists(t *testing.T) {
 	path := tempDB(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -144,8 +144,30 @@ func TestUpgradeFromSchema1KeepsAccessLists(t *testing.T) {
 	if len(snap.Guilds) != 1 || snap.Guilds[0].GuildID != 100 || len(snap.Grants) != 1 || snap.Grants[0].UserID != 8 {
 		t.Errorf("access lists after upgrade: %+v", snap)
 	}
-	if ok, err := db.Access().AllowChannel(ctx, 500, "ask", access.Entry{AddedBy: 7}); err != nil || !ok {
-		t.Fatalf("AllowChannel after upgrade: %v, %v", ok, err)
+}
+
+// A v1.0.0 database with ask channels saved opens and works the same: the
+// channel list is ignored, not deleted (an older build would still find it).
+func TestSavedAskChannelsAreKeptButIgnored(t *testing.T) {
+	path := tempDB(t)
+	db := openAt(t, path)
+	ctx := context.Background()
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO allowed_channels (channel_id, command, added_by, added_at) VALUES (500, 'ask', 7, '2026-09-30T05:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Access().Grant(ctx, 8, "ask", access.Entry{AddedBy: 7}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db = openAt(t, path)
+	snap, err := db.Access().Snapshot(ctx)
+	if err != nil || len(snap.Grants) != 1 {
+		t.Fatalf("snapshot: %+v, %v", snap, err)
+	}
+	var n int
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowed_channels`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("saved channels: %d, %v; want the row kept", n, err)
 	}
 }
 

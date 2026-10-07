@@ -40,7 +40,9 @@ var migrations = []string{
 		last_played TEXT,
 		play_count  INTEGER NOT NULL DEFAULT 0
 	);`,
-	// 2: channels where a channel-limited command (ask) may run.
+	// 2: channels where a channel-limited command (ask) may run. Unused since
+	// v1.1.0 removed channel limits; kept, not dropped, so nothing is deleted
+	// and an older build still finds its list.
 	`CREATE TABLE allowed_channels (
 		channel_id INTEGER NOT NULL,
 		command    TEXT    NOT NULL,
@@ -54,6 +56,22 @@ var migrations = []string{
 		day     TEXT    NOT NULL,
 		balance INTEGER NOT NULL
 	);`,
+	// 4: reminders (remindme). next_at is Unix seconds, so it sorts; text is
+	// the user's own words, sent back to them and never logged.
+	`CREATE TABLE reminders (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL,
+		user_name  TEXT    NOT NULL DEFAULT '',
+		guild_id   INTEGER NOT NULL,
+		channel_id INTEGER NOT NULL,
+		text       TEXT    NOT NULL,
+		rule       TEXT    NOT NULL DEFAULT '',
+		location   TEXT    NOT NULL DEFAULT '',
+		next_at    INTEGER NOT NULL,
+		created_at TEXT    NOT NULL
+	);
+	CREATE INDEX reminders_next ON reminders (next_at);
+	CREATE INDEX reminders_user ON reminders (user_id);`,
 }
 
 // SchemaVersion is the version this build writes.

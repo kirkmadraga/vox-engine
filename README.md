@@ -23,11 +23,12 @@ see (`unauthorized_message` in `config.yaml`); a mention from them gets no reply
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
-| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant), in channels an owner enabled |
+| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant) |
 | `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
+| `remindme <when> <what>` | Pings you in this channel at that time, e.g. `in 2h`, `at 18:30`, `on friday`, `every day at 08:00` (`remindme` alone lists the formats). With `ask` and allowance left, the model words it | Granted users (its own grant) |
+| `remindme list` / `cancel <number>` | Your reminders in this server; remove one | Same as `remindme` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |
-| `allow` / `deny @user [command]` | Grant or revoke a command (default `play`) | Owners |
-| `allow` / `deny ask [#channel or ID]` | Enable or disable `ask` in a channel (default: this one; threads follow their channel) | Owners |
+| `allow` / `deny @user [command]` | Grant or revoke a command (default `play`); revoking `remindme` deletes that person's reminders, and `deny guild` the ones set there | Owners |
 
 Owners (from `config.yaml`) can use everything, everywhere. The bot stays silent
 to anyone not allowed.

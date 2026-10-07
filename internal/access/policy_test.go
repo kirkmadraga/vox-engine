@@ -232,6 +232,3 @@ func TestInheritedCommandsShareParentAccess(t *testing.T) {
 		t.Error("child still allowed after parent revoked")
 	}
 }
-func (failingBackend) ChannelAllowed(context.Context, snowflake.ID, string) (bool, error) {
-	return false, errDown
-}

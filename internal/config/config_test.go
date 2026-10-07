@@ -383,6 +383,23 @@ func TestParseLLMGuardrails(t *testing.T) {
 	}
 }
 
+// reminder_timezone defaults to ask's reset timezone, which defaults to UTC.
+func TestParseReminderTimezone(t *testing.T) {
+	for yaml, want := range map[string]string{
+		"":                                       "UTC",
+		"llm_daily_reset_timezone: Asia/Tokyo\n": "Asia/Tokyo",
+		"llm_daily_reset_timezone: Asia/Tokyo\nreminder_timezone: Europe/Berlin\n": "Europe/Berlin",
+	} {
+		cfg, err := Parse([]byte(yaml), env(fakeToken))
+		if err != nil || cfg.ReminderLocation.String() != want {
+			t.Errorf("%q: %v, %v; want %s", yaml, cfg.ReminderLocation, err, want)
+		}
+	}
+	if _, err := Parse([]byte("reminder_timezone: Mars/Olympus\n"), env(fakeToken)); err == nil || !strings.Contains(err.Error(), "reminder_timezone") {
+		t.Errorf("bad timezone: %v", err)
+	}
+}
+
 func TestParseDiscordMessageContent(t *testing.T) {
 	if cfg, err := Parse([]byte(""), env(fakeToken)); err != nil || cfg.DiscordMessageContent {
 		t.Errorf("default must be off: %v, %v", cfg.DiscordMessageContent, err)

@@ -3,6 +3,7 @@ package discordio
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -52,22 +53,9 @@ func SlashCommands(grantable []string, ask, askSearch bool) []discord.Applicatio
 				},
 			},
 		}
-		desc := verb + " a server, or a command for a user (owners only)"
-		if ask {
-			desc = verb + " a server, a command for a user, or an ask channel (owners only)"
-			subs = append(subs, discord.ApplicationCommandOptionSubCommand{
-				Name:        commands.AskCommand,
-				Description: verb + " a channel for ask (this one by default)",
-				Options: []discord.ApplicationCommandOption{
-					discord.ApplicationCommandOptionChannel{Name: "channel", Description: "Channel in this server",
-						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText, discord.ChannelTypeGuildNews}},
-					discord.ApplicationCommandOptionString{Name: "id", Description: "Channel ID, for another server"},
-				},
-			})
-		}
 		return discord.SlashCommandCreate{
 			Name:        name,
-			Description: desc,
+			Description: verb + " a server, or a command for a user (owners only)",
 			Contexts:    guildOnly,
 			Options:     subs,
 		}
@@ -89,6 +77,31 @@ func SlashCommands(grantable []string, ask, askSearch bool) []discord.Applicatio
 		simple("stop", "Clear the queue and leave voice"),
 		manage("allow", "Allow"),
 		manage("deny", "Remove"),
+		discord.SlashCommandCreate{
+			Name:        commands.RemindCommand,
+			Description: "Get pinged here at a time you choose",
+			Contexts:    guildOnly,
+			Options: []discord.ApplicationCommandOption{
+				discord.ApplicationCommandOptionSubCommand{
+					Name:        "set",
+					Description: "Set a reminder",
+					Options: []discord.ApplicationCommandOption{
+						discord.ApplicationCommandOptionString{Name: "when", Required: true, MaxLength: new(60),
+							Description: "e.g. in 2h, at 18:30, tomorrow at 9am, on friday, every day at 08:00"},
+						discord.ApplicationCommandOptionString{Name: "text", Description: "What to remind you about", Required: true,
+							MaxLength: new(commands.DefaultReminderChars)},
+					},
+				},
+				discord.ApplicationCommandOptionSubCommand{Name: "list", Description: "Show your reminders in this server"},
+				discord.ApplicationCommandOptionSubCommand{
+					Name:        "cancel",
+					Description: "Remove one of your reminders",
+					Options: []discord.ApplicationCommandOption{
+						discord.ApplicationCommandOptionInt{Name: "number", Description: "Its number, from /remindme list", Required: true, MinValue: new(1)},
+					},
+				},
+			},
+		},
 	}
 	if ask {
 		all = append(all, simple(commands.ForgetCommand, "Make the bot forget this channel's conversation"))
@@ -123,6 +136,23 @@ func slashArgs(data discord.SlashCommandInteractionData) (args string, ok bool) 
 		return opt("query"), true
 	case commands.AskCommand:
 		return opt("prompt"), true
+	case commands.RemindCommand:
+		if data.SubCommandName == nil {
+			return "", false
+		}
+		switch *data.SubCommandName {
+		case "set":
+			return opt("text"), true // the when travels apart, as Invocation.When
+		case "list":
+			return "list", true
+		case "cancel":
+			n, found := data.OptInt("number")
+			if !found {
+				return "", false
+			}
+			return "cancel " + strconv.Itoa(n), true
+		}
+		return "", false
 	case "allow", "deny":
 		if data.SubCommandName == nil {
 			return "", false
@@ -136,12 +166,6 @@ func slashArgs(data discord.SlashCommandInteractionData) (args string, ok bool) 
 				return "", false
 			}
 			return strings.TrimSpace(commands.Mention(user) + " " + opt("command")), true
-		case commands.AskCommand:
-			// The picked channel wins over a typed ID; neither means this channel.
-			if ch, found := data.OptSnowflake("channel"); found {
-				return commands.AskCommand + " " + ch.String(), true
-			}
-			return strings.TrimSpace(commands.AskCommand + " " + opt("id")), true
 		}
 	}
 	return "", false
@@ -265,16 +289,17 @@ func handleSlash(base context.Context, r *router.Router, responder InteractionRe
 		inv.Lucky, _ = data.OptBool("lucky")
 	case commands.AskCommand:
 		inv.Search, _ = data.OptBool("search")
+	case commands.RemindCommand:
+		if data.SubCommandName != nil && *data.SubCommandName == "set" {
+			inv.When, _ = data.OptString("when")
+			inv.When = strings.TrimSpace(inv.When)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(base, HandleTimeout)
 	defer cancel()
-	switch r.Check(ctx, inv) {
-	case router.Denied:
+	if !r.Check(ctx, inv) {
 		private(unauthorized)
-		return
-	case router.WrongChannel:
-		private(router.WrongChannelMessage(inv.Name))
 		return
 	}
 	// Answer within Discord's 3 s; searches and Spotify lookups take longer.

@@ -11,6 +11,7 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/cache"
 	"github.com/kirkmadraga/vox-engine/internal/llm"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/remind"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
@@ -36,6 +37,11 @@ type Debug struct {
 	// starting yt-dlp is slow). Both optional.
 	Version      string
 	YtdlpVersion func(context.Context) (string, error)
+	// Reminders and their scheduler and firer, for "debug remind"; nil = none.
+	Reminders   remind.Store
+	RemindStats func() remind.Stats
+	FireStats   func() FireStats
+	RemindZone  *time.Location
 }
 
 func (Debug) Name() string { return DebugCommand }
@@ -46,7 +52,8 @@ const debugHelp = "**debug** (owners only)\n" +
 	"`debug queue`: voice slots, what's playing and queued in each server\n" +
 	"`debug cache`: audio cache and downloads\n" +
 	"`debug ytdlp`: searches, last download and search\n" +
-	"`debug access`: allowed servers, grants and ask channels"
+	"`debug remind`: reminders saved and sent (never their text)\n" +
+	"`debug access`: allowed servers and grants"
 
 func (c Debug) Run(ctx context.Context, req Request) error {
 	var out string
@@ -61,6 +68,8 @@ func (c Debug) Run(ctx context.Context, req Request) error {
 		out = c.cache(ctx)
 	case "ytdlp":
 		out = c.ytdlp()
+	case "remind":
+		out = c.remind(ctx)
 	case "access":
 		snap, err := c.Access.Snapshot(ctx)
 		if err != nil {
@@ -73,6 +82,35 @@ func (c Debug) Run(ctx context.Context, req Request) error {
 	}
 	// No Mentions: user mentions render as names but never ping.
 	return req.Reply.Reply(ctx, Reply{Content: truncate(out, maxMessageLen)})
+}
+
+// remind reports reminders: counts and times only, never who set what.
+func (c Debug) remind(ctx context.Context) string {
+	if c.Reminders == nil {
+		return "**remind**: off."
+	}
+	total, repeating, err := c.Reminders.ReminderCounts(ctx)
+	if err != nil {
+		return "**remind**: couldn't read the reminders. Details are in the bot's log."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "**remind**: %d saved (%d repeat)", total, repeating)
+	if c.RemindZone != nil {
+		fmt.Fprintf(&b, " · times in %s", c.RemindZone)
+	}
+	if c.RemindStats != nil {
+		st := c.RemindStats()
+		if !st.NextDue.IsZero() {
+			fmt.Fprintf(&b, "\nNext due <t:%d:R>", st.NextDue.Unix())
+		}
+		fmt.Fprintf(&b, "\nSince start (%s): %d sent (%d late) · %d skipped as too late · %d gone (deleted) · %d failed",
+			short(c.now().Sub(c.Started)), st.Fired, st.Late, st.Dropped, st.Gone, st.Failed)
+	}
+	if c.FireStats != nil {
+		fs := c.FireStats()
+		fmt.Fprintf(&b, "\nWorded by the model %d · own text %d", fs.Worded, fs.Plain)
+	}
+	return b.String()
 }
 
 // about is the header of plain "debug": which build is running, with which

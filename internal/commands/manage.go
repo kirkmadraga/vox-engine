@@ -30,42 +30,25 @@ type AccessManager interface {
 	DenyGuild(ctx context.Context, guildID, by snowflake.ID) (bool, error)
 	Grant(ctx context.Context, userID snowflake.ID, command string, by snowflake.ID) (bool, error)
 	Revoke(ctx context.Context, userID snowflake.ID, command string, by snowflake.ID) (bool, error)
-	AllowChannel(ctx context.Context, channelID snowflake.ID, command string, by snowflake.ID) (bool, error)
-	DenyChannel(ctx context.Context, channelID snowflake.ID, command string, by snowflake.ID) (bool, error)
 	Snapshot(ctx context.Context) (access.Snapshot, error)
 }
 
 const saveFailed = "Couldn't save that change, so nothing changed. Details are in the bot's log."
 
 // target is what "allow"/"deny" act on: a guild (guildID 0 means the current
-// one), a channel for ask (channelID 0 means the current one), or a user and
-// a command.
+// one), or a user and a command.
 type target struct {
-	guild     bool
-	guildID   snowflake.ID
-	channel   bool
-	channelID snowflake.ID
-	user      snowflake.ID
-	command   string
+	guild   bool
+	guildID snowflake.ID
+	user    snowflake.ID
+	command string
 }
 
-// parseTarget parses "guild [guildID]", "ask [#channel | channelID]" or
-// "<@id> [command]".
+// parseTarget parses "guild [guildID]" or "<@id> [command]".
 func parseTarget(args string) (target, bool) {
 	fields := strings.Fields(args)
 	if len(fields) == 0 || len(fields) > 2 {
 		return target{}, false
-	}
-	if strings.EqualFold(fields[0], AskCommand) {
-		t := target{channel: true, command: AskCommand}
-		if len(fields) == 2 {
-			id, ok := parseChannel(fields[1])
-			if !ok {
-				return target{}, false
-			}
-			t.channelID = id
-		}
-		return t, true
 	}
 	if strings.EqualFold(fields[0], "guild") {
 		if len(fields) == 1 {
@@ -101,27 +84,6 @@ func parseUserMention(s string) (snowflake.ID, bool) {
 	return id, true
 }
 
-// parseChannel parses "<#id>" or a bare channel ID.
-func parseChannel(s string) (snowflake.ID, bool) {
-	if strings.HasPrefix(s, "<#") && strings.HasSuffix(s, ">") {
-		s = s[2 : len(s)-1]
-	}
-	id, err := snowflake.Parse(s)
-	if err != nil || id == 0 {
-		return 0, false
-	}
-	return id, true
-}
-
-// channelTarget resolves a channel target to an ID and its mention.
-func channelTarget(t target, req Request) (snowflake.ID, string) {
-	id := t.channelID
-	if id == 0 {
-		id = req.ChannelID
-	}
-	return id, "<#" + id.String() + ">"
-}
-
 // guildTarget resolves a guild target to an ID and a name for replies.
 func guildTarget(t target, req Request) (snowflake.ID, string) {
 	if t.guildID == 0 || t.guildID == req.GuildID {
@@ -141,9 +103,6 @@ func reply(ctx context.Context, req Request, format string, a ...any) error {
 type Allow struct {
 	Access AccessManager
 	Known  func(command string) bool // whether a command exists
-	// ChannelVisible reports whether the bot can see a channel; nil skips the
-	// check. Unknown channels are still allowed (like pre-allowing a guild).
-	ChannelVisible func(channelID snowflake.ID) bool
 }
 
 func (Allow) Name() string { return "allow" }
@@ -151,22 +110,7 @@ func (Allow) Name() string { return "allow" }
 func (c Allow) Run(ctx context.Context, req Request) error {
 	t, ok := parseTarget(req.Args)
 	if !ok {
-		return reply(ctx, req, "Usage: `allow guild [serverID]` (defaults to this server), `allow @user [command]` (defaults to `%s`), or `allow ask [#channel or channel ID]` (defaults to this channel).", DefaultGrantCommand)
-	}
-	if t.channel {
-		id, name := channelTarget(t, req)
-		changed, err := c.Access.AllowChannel(ctx, id, t.command, req.AuthorID)
-		switch {
-		case err != nil:
-			return reply(ctx, req, saveFailed)
-		case !changed:
-			return reply(ctx, req, "`%s` was already enabled in %s.", t.command, name)
-		}
-		msg := fmt.Sprintf("`%s` is now enabled in %s.", t.command, name)
-		if c.ChannelVisible != nil && !c.ChannelVisible(id) {
-			msg += fmt.Sprintf("\nNote: I can't see channel `%s` (a wrong ID, or I'm not in that server yet). It's saved anyway.", id)
-		}
-		return reply(ctx, req, "%s", msg)
+		return reply(ctx, req, "Usage: `allow guild [serverID]` (defaults to this server) or `allow @user [command]` (defaults to `%s`).", DefaultGrantCommand)
 	}
 	if t.guild {
 		gid, name := guildTarget(t, req)
@@ -209,8 +153,31 @@ func (c Allow) Run(ctx context.Context, req Request) error {
 }
 
 // Deny is "@Bot deny guild [guildID]" and "@Bot deny @user [command]".
+// Taking away remindme deletes that person's reminders, and denying a server
+// deletes the reminders set there (except Owners', who keep their access).
 type Deny struct {
-	Access AccessManager
+	Access    AccessManager
+	Reminders ReminderDeleter // nil = no reminders to clean up
+	Owners    []snowflake.ID
+}
+
+// ReminderDeleter removes reminders when access goes. remind.Store implements it.
+type ReminderDeleter interface {
+	DeleteUserReminders(ctx context.Context, user snowflake.ID) (int, error)
+	DeleteGuildReminders(ctx context.Context, guild snowflake.ID, keep []snowflake.ID) (int, error)
+}
+
+// reminderNote reports reminders deleted along with access, if any.
+func reminderNote(n int, err error) string {
+	switch {
+	case err != nil:
+		return "\nCouldn't delete the reminders that went with it; they'll be dropped when due."
+	case n == 1:
+		return "\nIts 1 reminder was deleted."
+	case n > 1:
+		return fmt.Sprintf("\nIts %d reminders were deleted.", n)
+	}
+	return ""
 }
 
 func (Deny) Name() string { return "deny" }
@@ -218,18 +185,7 @@ func (Deny) Name() string { return "deny" }
 func (c Deny) Run(ctx context.Context, req Request) error {
 	t, ok := parseTarget(req.Args)
 	if !ok {
-		return reply(ctx, req, "Usage: `deny guild [serverID]` (defaults to this server), `deny @user [command]` (defaults to `%s`), or `deny ask [#channel or channel ID]` (defaults to this channel).", DefaultGrantCommand)
-	}
-	if t.channel {
-		id, name := channelTarget(t, req)
-		changed, err := c.Access.DenyChannel(ctx, id, t.command, req.AuthorID)
-		switch {
-		case err != nil:
-			return reply(ctx, req, saveFailed)
-		case !changed:
-			return reply(ctx, req, "`%s` wasn't enabled in %s.", t.command, name)
-		}
-		return reply(ctx, req, "`%s` is no longer enabled in %s.", t.command, name)
+		return reply(ctx, req, "Usage: `deny guild [serverID]` (defaults to this server) or `deny @user [command]` (defaults to `%s`).", DefaultGrantCommand)
 	}
 	if t.guild {
 		gid, name := guildTarget(t, req)
@@ -240,7 +196,11 @@ func (c Deny) Run(ctx context.Context, req Request) error {
 		case !changed:
 			return reply(ctx, req, "%s wasn't allowed.", name)
 		}
-		return reply(ctx, req, "%s is no longer allowed. I'll only respond to owners there.", name)
+		note := ""
+		if c.Reminders != nil {
+			note = reminderNote(c.Reminders.DeleteGuildReminders(ctx, gid, c.Owners))
+		}
+		return reply(ctx, req, "%s is no longer allowed. I'll only respond to owners there.%s", name, note)
 	}
 
 	who := Mention(t.user)
@@ -255,7 +215,11 @@ func (c Deny) Run(ctx context.Context, req Request) error {
 	case !changed:
 		return reply(ctx, req, "%s didn't have `%s`.", who, t.command)
 	}
-	return reply(ctx, req, "%s can no longer use `%s`.", who, t.command)
+	note := ""
+	if t.command == RemindCommand && c.Reminders != nil {
+		note = strings.Replace(reminderNote(c.Reminders.DeleteUserReminders(ctx, t.user)), "Its", "Their", 1)
+	}
+	return reply(ctx, req, "%s can no longer use `%s`.%s", who, t.command, note)
 }
 
 // FormatAccess renders a snapshot for Discord. Times use Discord timestamps,
@@ -289,14 +253,6 @@ func FormatAccess(snap access.Snapshot, currentGuild snowflake.ID) string {
 	}
 	for _, u := range users {
 		fmt.Fprintf(&b, "- %s: %s\n", Mention(u), strings.Join(cmds[u], ", "))
-	}
-
-	// Only shown once there are any, so bots without ask look as before.
-	if len(snap.Channels) > 0 {
-		fmt.Fprintf(&b, "**Channels** (%d)\n", len(snap.Channels))
-	}
-	for _, ch := range snap.Channels {
-		fmt.Fprintf(&b, "- `%s` in <#%s> (`%s`), added by %s <t:%d:d>\n", ch.Command, ch.ChannelID, ch.ChannelID, Mention(ch.AddedBy), ch.AddedAt.Unix())
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

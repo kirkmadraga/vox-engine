@@ -29,6 +29,9 @@ type Request struct {
 	// Search is /ask's "search" option: allow a web search for this question.
 	// Slash-only; mentions start the question with "search" instead.
 	Search bool
+	// When is /remindme set's "when" option, kept apart from the text (Args)
+	// so nothing has to be guessed. Slash-only; mentions write it first.
+	When string
 	// Images are the asker's attached images, in order (mentions only).
 	Images []Image
 	// Quoted is the message this one replies to, when Discord included it

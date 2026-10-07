@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -349,6 +350,50 @@ func (c *Ask) Run(ctx context.Context, req Request) error {
 	}
 	return nil
 }
+
+// remindTimeout bounds wording one reminder, waiting for a slot included: a
+// reminder is a ping, so it falls back to the user's own text rather than
+// arrive late.
+const remindTimeout = 15 * time.Second
+
+// errNoAllowance means the user's daily allowance is used up.
+var errNoAllowance = errors.New("no daily allowance left")
+
+// Remind has the model word user's reminder text as a short message to them,
+// charged like a plain answer (1). It shares ask's slots and allowance; any
+// error (no allowance, no slot in time, the model failing) means the caller
+// should send the user's own text instead. Neither text is logged.
+func (c *Ask) Remind(ctx context.Context, user snowflake.ID, name, text string) (string, error) {
+	if ok, _, err := c.dailyOK(ctx, user); err != nil {
+		return "", err
+	} else if !ok {
+		return "", errNoAllowance
+	}
+	ctx, cancel := context.WithTimeout(ctx, remindTimeout)
+	defer cancel()
+	if err := c.acquire(ctx); err != nil {
+		return "", err
+	}
+	prompt := fmt.Sprintf("[reminder] It's time for a reminder %s set for themselves: %q. "+
+		"Write the message that reminds them: one or two short, friendly sentences in the reminder's language. "+
+		"Don't ask anything back.", name, text)
+	answer, err := c.LLM.Complete(ctx, llm.Request{Conversation: []llm.Message{{Role: llm.User, Name: name, Content: prompt}}})
+	c.release()
+	if err != nil {
+		return "", err
+	}
+	worded := strings.Join(strings.Fields(answer.Text), " ")
+	if worded == "" {
+		return "", errors.New("empty answer")
+	}
+	if _, _, err := c.Daily.Charge(ctx, user, answer.Usage); err != nil {
+		c.logger().Error("ask: couldn't update the daily balance", "user", user, "err", err)
+	}
+	return oneLine(worded, maxReminderWording), nil
+}
+
+// maxReminderWording caps the model's wording of a reminder.
+const maxReminderWording = 500
 
 // affordable checks user's daily allowance before a question goes ahead: the
 // balance must be above 0, and must cover a requested search's and an image's

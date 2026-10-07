@@ -42,19 +42,6 @@ func askData(prompt string) string {
 	return `{"id":"1","name":"ask","type":1,"options":[{"name":"prompt","type":3,"value":` + string(p) + `}]}`
 }
 
-// askChannelData is "/<verb> ask" with an optional picked channel and typed ID
-// (option type 7: channel).
-func askChannelData(verb string, channel snowflake.ID, id string) string {
-	var opts []string
-	if channel != 0 {
-		opts = append(opts, `{"name":"channel","type":7,"value":"`+channel.String()+`"}`)
-	}
-	if id != "" {
-		opts = append(opts, `{"name":"id","type":3,"value":"`+id+`"}`)
-	}
-	return `{"id":"1","name":"` + verb + `","type":1,"options":[{"name":"ask","type":1,"options":[` + strings.Join(opts, ",") + `]}]}`
-}
-
 func simpleData(name string) string { return `{"id":"1","name":"` + name + `","type":1}` }
 
 func userData(verb string, user snowflake.ID, command string) string {
@@ -86,17 +73,15 @@ func TestSlashArgs(t *testing.T) {
 		userData("deny", 8, ""):                 "<@8>",
 		guildData("allow", ""):                  "guild",
 		guildData("deny", "123456789012345678"): "guild 123456789012345678",
-		askChannelData("allow", 0, ""):          "ask",
-		askChannelData("allow", 500, ""):        "ask 500",
-		askChannelData("deny", 0, "600"):        "ask 600",
-		askChannelData("allow", 500, "600"):     "ask 500", // the picked channel wins
 	}
 	for raw, want := range cases {
 		if got, ok := slashArgs(slashData(t, raw)); !ok || got != want {
 			t.Errorf("%s: args = %q, %v; want %q", raw, got, ok, want)
 		}
 	}
-	for _, raw := range []string{simpleData("nope"), `{"id":"1","name":"allow","type":1}`} {
+	// "/allow ask" (removed in v1.1.0) from a stale client is unknown, not run.
+	staleAsk := `{"id":"1","name":"allow","type":1,"options":[{"name":"ask","type":1,"options":[]}]}`
+	for _, raw := range []string{simpleData("nope"), `{"id":"1","name":"allow","type":1}`, staleAsk} {
 		if _, ok := slashArgs(slashData(t, raw)); ok {
 			t.Errorf("%s: want not ok", raw)
 		}
@@ -107,7 +92,7 @@ func TestSlashArgs(t *testing.T) {
 func TestSlashCommandsMatchRegistry(t *testing.T) {
 	reg := []commands.Command{
 		commands.Ping{}, commands.Play{}, commands.Test{}, commands.QueueList{}, commands.Skip{}, commands.Stop{},
-		commands.Allow{}, commands.Deny{}, &commands.Ask{}, commands.Forget{}, // debug: hidden, mentions only
+		commands.Allow{}, commands.Deny{}, &commands.Ask{}, commands.Forget{}, commands.RemindMe{}, // debug: hidden, mentions only
 	}
 	var want []string
 	for _, c := range reg {
@@ -212,6 +197,9 @@ func (c recordCmd) Run(ctx context.Context, req commands.Request) error {
 	if req.Search {
 		entry += " [search]"
 	}
+	if req.When != "" {
+		entry += " [when " + req.When + "]"
+	}
 	*c.log = append(*c.log, entry)
 	for i := range c.replies {
 		req.Reply.Reply(ctx, commands.Reply{Content: fmt.Sprintf("%s reply %d @everyone", c.name, i+1)})
@@ -246,7 +234,6 @@ func newSlashE2E(t *testing.T) *slashE2E {
 	}
 	policy := access.NewPolicy(accesstest.NewMemory(), access.Options{
 		Owners: []snowflake.ID{owner}, Public: []string{"ping"}, OwnerOnly: commands.ManagementCommands, Inherit: inherit,
-		ChannelLimited: []string{commands.AskCommand},
 	})
 	var reg *commands.Registry
 	known := func(name string) bool { _, ok := reg.Lookup(name); return ok }
@@ -255,6 +242,7 @@ func newSlashE2E(t *testing.T) *slashE2E {
 		commands.Allow{Access: policy, Known: known}, commands.Deny{Access: policy}, commands.Debug{Access: policy},
 		recordCmd{name: "play", log: &e.log, replies: 1},
 		recordCmd{name: commands.AskCommand, log: &e.log, replies: 1},
+		recordCmd{name: commands.RemindCommand, log: &e.log, replies: 1},
 	}
 	for _, c := range commands.PlaybackCommands {
 		cmds = append(cmds, recordCmd{name: c, log: &e.log, replies: 1})
@@ -326,8 +314,6 @@ func TestSlashAndMentionsShareThePolicy(t *testing.T) {
 		{friend, allowedG, "stop", simpleData("stop"), true, false},
 		{friend, allowedG, "what is jazz", askData("what is jazz"), false, false}, // play's grant doesn't cover ask
 		{friend, allowedG, "ask what is jazz", askData("what is jazz"), false, false},
-		{owner, allowedG, "allow ask", askChannelData("allow", 0, ""), true, true},    // this channel
-		{friend, allowedG, "ask what is jazz", askData("what is jazz"), false, false}, // channel, but no grant
 		{owner, allowedG, "allow <@8> ask", userData("allow", friend, "ask"), true, true},
 		{friend, allowedG, "what is jazz", askData("what is jazz"), true, false},
 		{friend, allowedG, "ask what is jazz", askData("what is jazz"), true, false},
@@ -549,41 +535,79 @@ func TestPlayLuckyOptionIsOptional(t *testing.T) {
 	}
 }
 
-// /allow ask and /deny ask exist only when ask is on.
-func TestAskChannelSubcommandOnlyWithAsk(t *testing.T) {
+func remindData(sub, opts string) string {
+	return `{"id":"1","name":"remindme","type":1,"options":[{"name":"` + sub + `","type":1,"options":[` + opts + `]}]}`
+}
+
+// /remindme set|list|cancel reach the command as its mention forms, with set's
+// "when" kept apart from the text; it needs the remindme grant.
+func TestSlashRemindMe(t *testing.T) {
+	e := newSlashE2E(t)
+	set := remindData("set", `{"name":"when","type":3,"value":" in 2h "},{"name":"text","type":3,"value":"at last, stretch"}`)
+	for raw, want := range map[string]string{
+		set:                    "run remindme at last, stretch [when in 2h]",
+		remindData("list", ""): "run remindme list",
+		remindData("cancel", `{"name":"number","type":4,"value":12}`): "run remindme cancel 12",
+	} {
+		if ev, _ := e.slash(owner, allowedG, raw); len(ev.private) != 0 || !slices.Contains(e.log, want) {
+			t.Errorf("%s: events %q, want %q", raw, e.log, want)
+		}
+	}
+	if ev, _ := e.slash(friend, allowedG, set); len(ev.private) != 1 || ev.private[0].Content != denied {
+		t.Errorf("without the grant: private %+v", ev.private)
+	}
+	for _, raw := range []string{`{"id":"1","name":"remindme","type":1}`, remindData("cancel", ""), remindData("nope", "")} {
+		if _, ok := slashArgs(slashData(t, raw)); ok {
+			t.Errorf("%s: want not ok", raw)
+		}
+	}
+	// The definition: three subcommands; set's options are both required.
+	for _, c := range SlashCommands([]string{"play"}, false, false) {
+		s := c.(discord.SlashCommandCreate)
+		if s.Name != commands.RemindCommand {
+			continue
+		}
+		var subs []string
+		for _, o := range s.Options {
+			subs = append(subs, o.(discord.ApplicationCommandOptionSubCommand).Name)
+		}
+		setOpts := s.Options[0].(discord.ApplicationCommandOptionSubCommand).Options
+		when := setOpts[0].(discord.ApplicationCommandOptionString)
+		text := setOpts[1].(discord.ApplicationCommandOptionString)
+		if !slices.Equal(subs, []string{"set", "list", "cancel"}) || !when.Required || !text.Required || *text.MaxLength != commands.DefaultReminderChars {
+			t.Errorf("/remindme: subcommands %q, when %+v, text %+v", subs, when, text)
+		}
+		return
+	}
+	t.Error("no /remindme, even with ask off")
+}
+
+// /allow and /deny have only "guild" and "user": no ask channels (removed in
+// v1.1.0), with or without ask.
+func TestAllowDenyHaveNoAskChannels(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, c := range SlashCommands([]string{"play"}, on, on) {
 			s := c.(discord.SlashCommandCreate)
 			if s.Name != "allow" && s.Name != "deny" {
 				continue
 			}
-			has := false
+			var subs []string
 			for _, o := range s.Options {
-				if sub, ok := o.(discord.ApplicationCommandOptionSubCommand); ok && sub.Name == "ask" {
-					has = true
-					if ch := sub.Options[0].(discord.ApplicationCommandOptionChannel); ch.Required {
-						t.Errorf("/%s ask: the channel must be optional (default: this channel)", s.Name)
-					}
-				}
+				subs = append(subs, o.(discord.ApplicationCommandOptionSubCommand).Name)
 			}
-			if has != on {
-				t.Errorf("/%s with ask=%v: ask subcommand present = %v", s.Name, on, has)
+			if !slices.Equal(subs, []string{"guild", "user"}) || strings.Contains(s.Description, "channel") {
+				t.Errorf("/%s with ask=%v: subcommands %q, description %q", s.Name, on, subs, s.Description)
 			}
 		}
 	}
 }
 
-// Outside ask channels: /ask and an explicit "ask" get the hint, the mention
-// fallback stays silent, and a thread counts as its parent channel.
-func TestAskOnlyInAllowedChannelsBothWays(t *testing.T) {
+// ask follows the grant in every channel, with no channel setup: /ask, an
+// explicit "ask" and the mention fallback all run for a granted user anywhere
+// (threads included), and someone without the grant is refused as for any
+// command (privately on slash, silently on mentions).
+func TestAskInEveryChannelBothWays(t *testing.T) {
 	e := newSlashE2E(t)
-	const askChan, otherChan, thread snowflake.ID = 1, 2, 3
-	e.router.ThreadParent = func(id snowflake.ID) snowflake.ID {
-		if id == thread {
-			return askChan
-		}
-		return 0
-	}
 	mention := func(user, channel snowflake.ID, text string) []commands.Reply {
 		mr := &mentionReplier{}
 		e.router.Handle(context.Background(), router.Message{GuildID: allowedG, ChannelID: channel, AuthorID: user, Content: "<@1000> " + text}, mr)
@@ -595,32 +619,25 @@ func TestAskOnlyInAllowedChannelsBothWays(t *testing.T) {
 		handleSlash(context.Background(), e.router, &fakeResponder{log: &e.log}, denied, slog.New(slog.NewTextHandler(io.Discard, nil)), ev)
 		return ev
 	}
-	mention(owner, askChan, "allow guild")
-	mention(owner, askChan, "allow <@8> ask")
-	mention(owner, askChan, "allow ask")
+	mention(owner, 1, "allow guild")
+	mention(owner, 1, "allow <@8> ask")
 
-	hint := router.WrongChannelMessage("ask")
-	if ev := slashIn(friend, otherChan, askData("hi")); len(ev.private) != 1 || ev.private[0].Content != hint || slices.Contains(e.log, "run ask hi") {
-		t.Errorf("/ask elsewhere: private %+v, events %q", ev.private, e.log)
-	}
-	if got := mention(friend, otherChan, "ask hi"); len(got) != 1 || got[0].Content != hint {
-		t.Errorf("explicit ask elsewhere: %+v", got)
-	}
-	if got := mention(friend, otherChan, "hi there"); len(got) != 0 {
-		t.Errorf("the fallback elsewhere must stay silent: %+v", got)
-	}
-	if got := mention(friend, askChan, "hi there"); len(got) != 1 {
-		t.Errorf("the fallback in the ask channel: %+v", got)
-	}
-	if slashIn(friend, thread, askData("hi")); !slices.Contains(e.log, "run ask hi") {
-		t.Errorf("/ask in a thread of the ask channel: events %q", e.log)
-	}
-	if slashIn(owner, otherChan, askData("hi")); !slices.Contains(e.log, "run ask hi") {
-		t.Errorf("owners bypass channel limits: events %q", e.log)
-	}
-	// Someone without the grant still gets the plain refusal, not the hint.
-	if ev := slashIn(stranger, otherChan, askData("hi")); len(ev.private) != 1 || ev.private[0].Content != denied {
-		t.Errorf("no grant: private %+v", ev.private)
+	for _, ch := range []snowflake.ID{1, 2, 3} { // any channel; 3 could be a thread: no lookup needed
+		if ev := slashIn(friend, ch, askData("hi")); len(ev.private) != 0 || !slices.Contains(e.log, "run ask hi") {
+			t.Errorf("/ask in channel %d: private %+v, events %q", ch, ev.private, e.log)
+		}
+		if got := mention(friend, ch, "ask hi"); len(got) != 1 || got[0].Content == denied {
+			t.Errorf("explicit ask in channel %d: %+v", ch, got)
+		}
+		if got := mention(friend, ch, "hi there"); len(got) != 1 {
+			t.Errorf("the fallback in channel %d: %+v", ch, got)
+		}
+		if ev := slashIn(stranger, ch, askData("hi")); len(ev.private) != 1 || ev.private[0].Content != denied || slices.Contains(e.log, "run ask hi") {
+			t.Errorf("no grant, /ask in channel %d: private %+v, events %q", ch, ev.private, e.log)
+		}
+		if got := mention(stranger, ch, "hi there"); len(got) != 0 {
+			t.Errorf("no grant, mention in channel %d must stay silent: %+v", ch, got)
+		}
 	}
 }
 

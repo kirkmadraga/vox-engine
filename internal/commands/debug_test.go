@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/cache"
 	"github.com/kirkmadraga/vox-engine/internal/llm"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
+	"github.com/kirkmadraga/vox-engine/internal/remind"
+	"github.com/kirkmadraga/vox-engine/internal/remind/remindtest"
 	"github.com/kirkmadraga/vox-engine/internal/ytdlp"
 )
 
@@ -168,6 +171,24 @@ func TestDebugCache(t *testing.T) {
 		"Downloads: 1 running (of 1) · 2 waiting · next may start in 12s")
 	d.Cache = func(context.Context) (cache.Status, error) { return cache.Status{}, errors.New("db") }
 	has(t, "cache error", runDebug(t, d, "cache"), "couldn't read")
+}
+
+func TestDebugRemind(t *testing.T) {
+	has(t, "off", runDebug(t, Debug{}, "remind"), "**remind**: off.")
+	store := &remindtest.Memory{}
+	store.AddReminder(context.Background(), remind.Reminder{UserID: 8, Text: "secret plans", Next: debugNow})
+	store.AddReminder(context.Background(), remind.Reminder{UserID: 8, Text: "secret too", Rule: remind.Rule{Every: time.Hour}, Next: debugNow})
+	d := Debug{Reminders: store, RemindZone: time.UTC, Started: debugNow.Add(-time.Hour), Now: func() time.Time { return debugNow },
+		RemindStats: func() remind.Stats {
+			return remind.Stats{Fired: 5, Late: 1, Dropped: 2, Gone: 1, NextDue: debugNow.Add(time.Hour)}
+		},
+		FireStats: func() FireStats { return FireStats{Worded: 3, Plain: 2} }}
+	out := runDebug(t, d, "remind")
+	has(t, "remind", out, "**remind**: 2 saved (1 repeat) · times in UTC", fmt.Sprintf("Next due <t:%d:R>", debugNow.Add(time.Hour).Unix()),
+		"Since start (1h 0m): 5 sent (1 late) · 2 skipped as too late · 1 gone (deleted) · 0 failed", "Worded by the model 3 · own text 2")
+	if strings.Contains(out, "secret") || strings.Contains(out, "<@8>") {
+		t.Errorf("debug remind shows content or people:\n%s", out)
+	}
 }
 
 func TestDebugYtdlp(t *testing.T) {

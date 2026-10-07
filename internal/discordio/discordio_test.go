@@ -120,6 +120,35 @@ func TestChannelReplierRetriesAnyFailure(t *testing.T) {
 	}
 }
 
+func TestChannelGone(t *testing.T) {
+	gone := func(code rest.JSONErrorCode) error { return &rest.Error{Code: code} }
+	for err, want := range map[error]bool{
+		gone(rest.JSONErrorCodeUnknownChannel):                 true,
+		gone(rest.JSONErrorCodeMissingAccess):                  true,
+		gone(rest.JSONErrorCodeLackPermissionsToPerformAction): true,
+		gone(rest.JSONErrorCodeUnknownMessage):                 false,
+		&rest.Error{Response: &http.Response{StatusCode: 502}}: false,
+		errors.New("connection reset"):                         false,
+		context.DeadlineExceeded:                               false,
+	} {
+		if got := ChannelGone(err); got != want {
+			t.Errorf("%v: %v, want %v", err, got, want)
+		}
+	}
+}
+
+// Reminders go out as plain messages that ping only who they're for.
+func TestSendTo(t *testing.T) {
+	s := &fakeSender{}
+	if err := SendTo(s)(context.Background(), 77, commands.Reply{Content: "<@8> stretch @everyone", Mentions: []snowflake.ID{8}}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(s.msg.AllowedMentions)
+	if s.channel != 77 || s.msg.MessageReference != nil || string(body) != `{"parse":[],"roles":[],"users":["8"],"replied_user":false}` {
+		t.Errorf("channel %d, reference %+v, allowed_mentions %s", s.channel, s.msg.MessageReference, body)
+	}
+}
+
 func TestChannelReplierPlainByDefault(t *testing.T) {
 	s := &fakeSender{}
 	(ChannelReplier{Sender: s, ChannelID: 1}).Reply(context.Background(), commands.Reply{Content: "pong"})

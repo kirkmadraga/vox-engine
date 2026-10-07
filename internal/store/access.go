@@ -48,21 +48,6 @@ func (a Access) HasGrant(ctx context.Context, userID snowflake.ID, command strin
 	return a.exists(ctx, `SELECT 1 FROM grants WHERE user_id = ? AND command = ?`, int64(userID), command)
 }
 
-func (a Access) AllowChannel(ctx context.Context, channelID snowflake.ID, command string, e access.Entry) (bool, error) {
-	return changed(a.db.sql.ExecContext(ctx,
-		`INSERT INTO allowed_channels (channel_id, command, added_by, added_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT (channel_id, command) DO NOTHING`,
-		int64(channelID), command, int64(e.AddedBy), formatTime(e.AddedAt)))
-}
-
-func (a Access) DenyChannel(ctx context.Context, channelID snowflake.ID, command string) (bool, error) {
-	return changed(a.db.sql.ExecContext(ctx, `DELETE FROM allowed_channels WHERE channel_id = ? AND command = ?`, int64(channelID), command))
-}
-
-func (a Access) ChannelAllowed(ctx context.Context, channelID snowflake.ID, command string) (bool, error) {
-	return a.exists(ctx, `SELECT 1 FROM allowed_channels WHERE channel_id = ? AND command = ?`, int64(channelID), command)
-}
-
 func (a Access) exists(ctx context.Context, query string, args ...any) (bool, error) {
 	var one int
 	err := a.db.sql.QueryRowContext(ctx, query, args...).Scan(&one)
@@ -101,17 +86,9 @@ func (a Access) Snapshot(ctx context.Context) (access.Snapshot, error) {
 		return snap, err
 	}
 
-	// Grants and channels share a shape: (ID, command, added_by, added_at).
 	err = a.idCommandRows(ctx, "grants", `SELECT user_id, command, added_by, added_at FROM grants`,
 		func(id snowflake.ID, cmd string, e access.Entry) {
 			snap.Grants = append(snap.Grants, access.GrantEntry{UserID: id, Command: cmd, Entry: e})
-		})
-	if err != nil {
-		return snap, err
-	}
-	err = a.idCommandRows(ctx, "allowed_channels", `SELECT channel_id, command, added_by, added_at FROM allowed_channels`,
-		func(id snowflake.ID, cmd string, e access.Entry) {
-			snap.Channels = append(snap.Channels, access.ChannelEntry{ChannelID: id, Command: cmd, Entry: e})
 		})
 	if err != nil {
 		return snap, err
