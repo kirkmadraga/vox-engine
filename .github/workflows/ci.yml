@@ -1,0 +1,59 @@
+# The checks from scripts/check.sh, on every push to master and every pull
+# request: vet, race-enabled tests, and the Linux and Windows builds. The
+# network integration tests only run on demand, so here they're only vetted.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # The Go version go.mod names: the oldest one the README promises works.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+        env:
+          CGO_ENABLED: "0"
+
+      - name: go vet (integration)
+        run: go vet -tags integration ./...
+        env:
+          CGO_ENABLED: "0"
+
+      # The race detector needs cgo; the runner has gcc.
+      - name: go test -race
+        run: go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+
+      - name: build linux/amd64
+        run: go build -ldflags '-s -w' -o dist/vox-engine ./cmd/vox-engine
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+
+      - name: build windows/amd64
+        run: go build -ldflags '-s -w' -o dist/vox-engine.exe ./cmd/vox-engine
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64

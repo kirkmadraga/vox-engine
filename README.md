@@ -4,7 +4,7 @@
 
 **A vibe-coded multi-tool Discord bot you self-host on low-end hardware.**
 
-[![Latest version](https://img.shields.io/github/v/tag/kirkmadraga/vox-engine?sort=semver&label=version)](https://github.com/kirkmadraga/vox-engine/tags) [![Go](https://img.shields.io/github/go-mod/go-version/kirkmadraga/vox-engine)](go.mod) [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![CI](https://github.com/kirkmadraga/vox-engine/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kirkmadraga/vox-engine/actions/workflows/ci.yml) [![Latest version](https://img.shields.io/github/v/tag/kirkmadraga/vox-engine?sort=semver&label=version)](https://github.com/kirkmadraga/vox-engine/tags) [![Go](https://img.shields.io/github/go-mod/go-version/kirkmadraga/vox-engine)](go.mod) [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 </div>
 
