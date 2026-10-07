@@ -16,8 +16,7 @@ import (
 const (
 	MinInterval = time.Hour            // repeats: protects the channel and the allowance
 	MaxAhead    = 366 * 24 * time.Hour // one-off reminders: about a year
-	MinAhead    = time.Minute
-	defaultHour = 9 // "tomorrow", "on friday", "every day": 09:00 unless a time is given
+	defaultHour = 9                    // "tomorrow", "on friday", "every day": 09:00 unless a time is given
 )
 
 // ErrUsage means the text isn't a when this grammar understands.
@@ -146,9 +145,13 @@ func Parse(text string, now time.Time, loc *time.Location) (When, string, error)
 	if err != nil {
 		return When{}, "", err
 	}
+	// Saved times are whole seconds: round up, so it never fires early.
+	if t := w.At.Truncate(time.Second); !t.Equal(w.At) {
+		w.At = t.Add(time.Second)
+	}
 	if w.Rule.Once() {
 		switch ahead := w.At.Sub(now); {
-		case ahead < MinAhead:
+		case ahead <= 0:
 			return When{}, "", errors.New("that's not in the future")
 		case ahead > MaxAhead:
 			return When{}, "", errors.New("that's more than a year away")
@@ -203,8 +206,6 @@ func (p *parser) when() (When, error) {
 		return p.on()
 	case "every":
 		return p.every()
-	case "daily":
-		return p.daysAt([7]bool{true, true, true, true, true, true, true})
 	}
 	return When{}, ErrUsage
 }
@@ -222,8 +223,8 @@ func (p *parser) on() (When, error) {
 			return When{}, err
 		}
 		ahead := (int(d) - int(p.now.Weekday()) + 7) % 7
-		if ahead == 0 {
-			ahead = 7 // "on friday" on a Friday: next week's
+		if ahead == 0 && !p.day(0, h, m).After(p.now) {
+			ahead = 7 // "on friday" on a Friday, its time passed: next week's
 		}
 		return When{At: p.day(ahead, h, m)}, nil
 	}
@@ -348,16 +349,16 @@ func parseDate(s string) (year, month, day int, hasYear, ok bool) {
 	parts := strings.Split(s, "-")
 	nums := make([]int, len(parts))
 	for i, part := range parts {
-		n, err := strconv.Atoi(part)
-		if err != nil || part == "" || n < 0 {
-			return 0, 0, 0, false, false
+		if part == "" || len(part) > 4 || strings.Trim(part, "0123456789") != "" {
+			return 0, 0, 0, false, false // digits only: no "+12"
 		}
-		nums[i] = n
+		nums[i], _ = strconv.Atoi(part)
 	}
+	short := func(i int) bool { return len(parts[i]) <= 2 } // months and days
 	switch {
-	case len(nums) == 3 && len(parts[0]) == 4:
+	case len(nums) == 3 && len(parts[0]) == 4 && short(1) && short(2):
 		return nums[0], nums[1], nums[2], true, valid(nums[1], nums[2])
-	case len(nums) == 2:
+	case len(nums) == 2 && short(0) && short(1):
 		return 0, nums[0], nums[1], false, valid(nums[0], nums[1])
 	}
 	return 0, 0, 0, false, false
@@ -366,7 +367,8 @@ func parseDate(s string) (year, month, day int, hasYear, ok bool) {
 func valid(month, day int) bool { return month >= 1 && month <= 12 && day >= 1 && day <= 31 }
 
 // parseDuration reads "45m", "2h", "1h30m", "3d", "2w": numbers with units
-// m, h, d, w, at least one.
+// m, h, d, w, at least one. Anything over maxDuration is refused, so the sum
+// can't overflow and wrap into a different, plausible duration.
 func parseDuration(s string) (time.Duration, bool) {
 	units := map[byte]time.Duration{'m': time.Minute, 'h': time.Hour, 'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour}
 	var total time.Duration
@@ -381,10 +383,12 @@ func parseDuration(s string) (time.Duration, bool) {
 			continue
 		}
 		unit, ok := units[c]
-		if !ok || digits == 0 {
+		if !ok || digits == 0 || time.Duration(n) > maxDuration/unit {
 			return 0, false
 		}
-		total += time.Duration(n) * unit
+		if total += time.Duration(n) * unit; total > maxDuration {
+			return 0, false
+		}
 		n, digits = 0, 0
 	}
 	if digits != 0 || total <= 0 {
@@ -392,6 +396,10 @@ func parseDuration(s string) (time.Duration, bool) {
 	}
 	return total, true
 }
+
+// maxDuration caps any one duration: twice MaxAhead, so "in 400d" still gets
+// "more than a year away" rather than "I couldn't tell when".
+const maxDuration = 2 * MaxAhead
 
 var weekdays = map[string]time.Weekday{
 	"sunday": time.Sunday, "sun": time.Sunday,

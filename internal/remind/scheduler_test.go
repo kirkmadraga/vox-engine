@@ -172,12 +172,31 @@ func TestSchedulerFiresWhenDueAndDeletesOneOffs(t *testing.T) {
 	if wait := h.runUntilIdle(t); wait != time.Hour || !slices.Equal(h.fired, []firing{{a, false}}) {
 		t.Fatalf("at the first: wait %v, fired %v", wait, h.fired)
 	}
+	// Handled an hour after its time while the bot runs (e.g. behind others):
+	// delayed, not "late" (the bot wasn't off).
 	h.clock = now.Add(3 * time.Hour)
 	h.runUntilIdle(t)
-	if !slices.Equal(h.fired, []firing{{a, false}, {b, true}}) || len(h.store.all()) != 0 {
+	if !slices.Equal(h.fired, []firing{{a, false}, {b, false}}) || len(h.store.all()) != 0 {
 		t.Errorf("fired %v, left %+v", h.fired, h.store.all())
 	}
-	if st := h.s.Stats(); st.Fired != 2 || st.Late != 1 || !st.NextDue.IsZero() {
+	if st := h.s.Stats(); st.Fired != 2 || st.Late != 0 || !st.NextDue.IsZero() {
+		t.Errorf("stats %+v", st)
+	}
+}
+
+// "Late" means it came due while the bot was off: before this run started.
+func TestSchedulerLateMeansDueWhileOff(t *testing.T) {
+	h := newHarness()
+	before := h.add(now.Add(-time.Hour), Rule{})
+	h.add(now.Add(time.Minute), Rule{})
+	h.s.started = now // the bot came back at now
+	h.runUntilIdle(t)
+	h.clock = now.Add(10 * time.Minute) // the second is handled 9 minutes after its time
+	h.runUntilIdle(t)
+	if len(h.fired) != 2 || h.fired[0] != (firing{before, true}) || h.fired[1].late {
+		t.Errorf("fired %v; want only the one due while off marked late", h.fired)
+	}
+	if st := h.s.Stats(); st.Late != 1 {
 		t.Errorf("stats %+v", st)
 	}
 }
@@ -191,6 +210,7 @@ func TestSchedulerRepeats(t *testing.T) {
 	}
 	// Down for 5 hours: sent once (late), then back on its rhythm; no burst.
 	h.clock = now.Add(7 * time.Hour)
+	h.s.started = h.clock // restarted
 	h.runUntilIdle(t)
 	if rs := h.store.all(); !rs[0].Next.Equal(now.Add(8*time.Hour)) || !slices.Equal(h.fired, []firing{{id, false}, {id, true}}) {
 		t.Errorf("after a gap: next %v, fired %v", rs[0].Next, h.fired)
@@ -231,14 +251,44 @@ func TestSchedulerDeletesWhatsGoneAndMovesOnAfterFailures(t *testing.T) {
 	}
 }
 
-// If the store can't record that a reminder was sent, the scheduler backs
-// off instead of sending it again at once.
-func TestSchedulerBacksOffWhenTheStoreFails(t *testing.T) {
-	h := newHarness()
-	h.add(now, Rule{})
-	h.store.fail = errors.New("disk full")
-	if _, err := h.s.step(context.Background()); err == nil || len(h.fired) != 1 {
-		t.Fatalf("want an error after one send, got %v (fired %v)", err, h.fired)
+// If the store can read but not write (a full disk), a due reminder is sent
+// once: later steps only retry recording it, never send it again.
+func TestSchedulerSendsOnceWhileTheStoreCantWrite(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		rule Rule
+		err  error
+	}{
+		{"one-off", Rule{}, nil},
+		{"repeat", Rule{Every: time.Hour}, nil},
+		{"gone", Rule{Every: time.Hour}, ErrGone},
+	} {
+		h := newHarness()
+		id := h.add(now, c.rule)
+		h.err = c.err
+		h.store.fail = errors.New("disk full")
+		for i := range 5 {
+			if _, err := h.s.step(context.Background()); err == nil {
+				t.Fatalf("%s, step %d: want the store's error", c.name, i)
+			}
+			h.clock = h.clock.Add(time.Minute) // Run's back-off
+		}
+		if len(h.fired) != 1 {
+			t.Errorf("%s: sent %d times while the store couldn't write, want 1", c.name, len(h.fired))
+		}
+		h.store.fail = nil // the disk has room again
+		h.runUntilIdle(t)
+		rs := h.store.all()
+		switch {
+		case len(h.fired) != 1:
+			t.Errorf("%s: sent again once recorded: %v", c.name, h.fired)
+		case c.rule.Once() || c.err != nil:
+			if len(rs) != 0 {
+				t.Errorf("%s: want it deleted, left %+v", c.name, rs)
+			}
+		case len(rs) != 1 || rs[0].ID != id || !rs[0].Next.After(h.clock):
+			t.Errorf("%s: want it moved on, got %+v", c.name, rs)
+		}
 	}
 }
 

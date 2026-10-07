@@ -182,18 +182,13 @@ func SendTo(sender MessageSender) func(ctx context.Context, channelID snowflake.
 	}
 }
 
-// ChannelGone reports whether err means the bot can't post in that channel
-// any more: it was deleted, or the bot lost access or permission to send.
+// ChannelGone reports whether err means the channel was deleted, for good.
+// Missing access or permission isn't "gone" (the operator's choice): it can
+// be temporary (a channel locked for an event), so it's a failed send, and a
+// repeating reminder tries again next time.
 func ChannelGone(err error) bool {
 	var re *rest.Error
-	if !errors.As(err, &re) {
-		return false
-	}
-	switch re.Code {
-	case rest.JSONErrorCodeUnknownChannel, rest.JSONErrorCodeMissingAccess, rest.JSONErrorCodeLackPermissionsToPerformAction:
-		return true
-	}
-	return false
+	return errors.As(err, &re) && re.Code == rest.JSONErrorCodeUnknownChannel
 }
 
 // reportSent tells r.Sent (if any) which message was sent.

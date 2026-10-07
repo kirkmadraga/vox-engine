@@ -46,7 +46,7 @@ func (c RemindMe) help() string {
 		"`remindme in 45m stretch`: in 45 minutes (also 1h30m, 3d, 2w)\n" +
 		"`remindme at 18:30 call mom`: today, or tomorrow if it's passed (also 6:30pm)\n" +
 		"`remindme tomorrow at 9am pay rent`: tomorrow (09:00 without a time)\n" +
-		"`remindme on friday at 20:00 game night`: the next Friday\n" +
+		"`remindme on friday at 20:00 game night`: the coming Friday (today, if it's Friday before 20:00)\n" +
 		"`remindme on 2026-12-24 wrap gifts`: that date (12-24: the next one)\n" +
 		"`remindme every 2h drink water`: over and over, at least an hour apart\n" +
 		"`remindme every day at 08:00 standup`: also every weekday, weekend, monday or mon,thu\n" +
@@ -230,12 +230,13 @@ func (c RemindMe) logger() *slog.Logger {
 //     owner's own text. remindme alone never costs anything.
 //   - It pings only its owner; mentions in the text never ping anyone.
 //   - A failed send is tried once more (a rare double post beats a lost
-//     reminder); a channel that's gone makes the reminder gone.
+//     reminder); a deleted channel makes the reminder gone. Missing
+//     permission is just a failed send: a repeat tries again next time.
 type RemindFirer struct {
 	Allowed func(ctx context.Context, user, guild snowflake.ID, command string) bool
 	Ask     *Ask // nil = ask is off: always the owner's text
 	Send    func(ctx context.Context, channelID snowflake.ID, r Reply) error
-	Gone    func(error) bool // the channel is gone or closed to the bot
+	Gone    func(error) bool // the channel was deleted
 	Logger  *slog.Logger
 
 	worded, plain atomic.Int64

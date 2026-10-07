@@ -13,17 +13,16 @@ import (
 // more (its owner lost access, or the channel is gone): it's deleted.
 var ErrGone = errors.New("reminder can't be delivered any more")
 
-// FireFunc delivers r. late is true when it's being sent after its time (the
-// bot was down). Errors other than ErrGone are logged; the reminder then
-// moves on as if sent (a one-off is deleted), so nothing piles up.
+// FireFunc delivers r. late is true when it came due while the bot was off
+// (before Run started), so it's being sent after its time; a reminder merely
+// delayed behind others while the bot runs isn't late. Errors other than
+// ErrGone are logged; the reminder then moves on as if sent (a one-off is
+// deleted), so nothing piles up.
 type FireFunc func(ctx context.Context, r Reminder, late bool) error
 
 // DefaultLateLimit is how late a reminder may still be sent (after the bot
 // was down); later, a one-off is dropped and a repeat skips to its next time.
 const DefaultLateLimit = 24 * time.Hour
-
-// lateAfter marks a reminder as late in the message once it's this overdue.
-const lateAfter = time.Minute
 
 // maxWait caps one sleep, so a changed clock is noticed.
 const maxWait = time.Hour
@@ -40,8 +39,15 @@ type Scheduler struct {
 	After     func(time.Duration) <-chan time.Time // nil = time.After
 	Logger    *slog.Logger                         // nil = discard
 
-	once sync.Once
-	wake chan struct{}
+	once    sync.Once
+	wake    chan struct{}
+	started time.Time // when Run began: reminders due before it are late
+
+	// unrecorded are reminders sent (or found gone) whose delete or
+	// reschedule failed, by ID, with the due time they had. Only Run's
+	// goroutine uses it. While the store can't write, they're retried
+	// without being sent again: a full disk mustn't ping someone every minute.
+	unrecorded map[int64]unrecorded
 
 	fired, late, dropped, gone, failed atomic.Int64
 	nextDue                            atomic.Int64 // Unix seconds; 0 = none
@@ -62,7 +68,16 @@ func (s *Scheduler) Stats() Stats {
 	return st
 }
 
-func (s *Scheduler) init() { s.wake = make(chan struct{}, 1) }
+// unrecorded is a handled reminder the store didn't record yet.
+type unrecorded struct {
+	next time.Time // its due time when handled
+	gone bool      // delete it (rather than move it on)
+}
+
+func (s *Scheduler) init() {
+	s.wake = make(chan struct{}, 1)
+	s.unrecorded = map[int64]unrecorded{}
+}
 
 // Wake makes a running scheduler look at the store again now.
 func (s *Scheduler) Wake() {
@@ -76,6 +91,7 @@ func (s *Scheduler) Wake() {
 // Run fires reminders until ctx ends.
 func (s *Scheduler) Run(ctx context.Context) {
 	s.once.Do(s.init)
+	s.started = s.now()
 	for {
 		wait, err := s.step(ctx)
 		if err != nil {
@@ -97,6 +113,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 // step handles the soonest reminder if it's due, and returns how long to wait
 // before the next look (0: look again at once).
 func (s *Scheduler) step(ctx context.Context) (time.Duration, error) {
+	s.once.Do(s.init)
 	r, ok, err := s.Store.SoonestReminder(ctx)
 	if err != nil {
 		return 0, err
@@ -110,9 +127,17 @@ func (s *Scheduler) step(ctx context.Context) (time.Duration, error) {
 	if wait := r.Next.Sub(now); wait > 0 {
 		return min(wait, maxWait), nil
 	}
+	if u, ok := s.unrecorded[r.ID]; ok && u.next.Equal(r.Next) {
+		// Already sent: only record it this time.
+		if err := s.record(ctx, r, now, u.gone); err != nil {
+			return 0, err // still can't: Run waits a minute
+		}
+		delete(s.unrecorded, r.ID)
+		return 0, nil
+	}
 	if err := s.handle(ctx, r, now); err != nil {
-		// It couldn't be deleted or moved on: wait (Run's minute) rather than
-		// sending it again straight away.
+		// It couldn't be deleted or moved on: wait (Run's minute), and next
+		// time only record it, never send it again.
 		return 0, err
 	}
 	if ctx.Err() != nil {
@@ -135,35 +160,46 @@ func (s *Scheduler) handle(ctx context.Context, r Reminder, now time.Time) error
 		log.Warn("remind: too late to send; skipped", "overdue", overdue.Round(time.Second), "repeats", !r.Rule.Once())
 		return s.moveOn(ctx, r, now)
 	}
-	err := s.Fire(ctx, r, overdue >= lateAfter)
+	late := r.Next.Before(s.started)
+	err := s.Fire(ctx, r, late)
+	gone := false
 	switch {
 	case ctx.Err() != nil:
 		return nil // shutting down: untouched, so it's sent (late) after a restart
 	case errors.Is(err, ErrGone):
+		gone = true
 		s.gone.Add(1)
 		log.Info("remind: can't be delivered any more; deleted", "err", err)
-		_, err := s.Store.DeleteReminder(ctx, r.ID)
-		return err
 	case err != nil:
 		s.failed.Add(1)
 		log.Error("remind: couldn't send", "err", err)
 	default:
 		s.fired.Add(1)
-		if overdue >= lateAfter {
+		if late {
 			s.late.Add(1)
 		}
-		log.Info("remind: sent", "late", overdue >= lateAfter, "repeats", !r.Rule.Once())
+		log.Info("remind: sent", "late", late, "repeats", !r.Rule.Once())
 	}
-	return s.moveOn(ctx, r, now)
+	if err := s.record(ctx, r, now, gone); err != nil {
+		s.unrecorded[r.ID] = unrecorded{next: r.Next, gone: gone}
+		return err
+	}
+	return nil
 }
 
-// moveOn deletes a one-off and moves a repeat to its next time after now.
-func (s *Scheduler) moveOn(ctx context.Context, r Reminder, now time.Time) error {
-	if r.Rule.Once() {
+// record deletes a handled reminder that's gone or a one-off, and moves a
+// repeat to its next time after now.
+func (s *Scheduler) record(ctx context.Context, r Reminder, now time.Time, gone bool) error {
+	if gone || r.Rule.Once() {
 		_, err := s.Store.DeleteReminder(ctx, r.ID)
 		return err
 	}
 	return s.Store.RescheduleReminder(ctx, r.ID, r.Rule.Next(r.Next, now, r.location()))
+}
+
+// moveOn records a reminder that was skipped, not sent.
+func (s *Scheduler) moveOn(ctx context.Context, r Reminder, now time.Time) error {
+	return s.record(ctx, r, now, false)
 }
 
 func (s *Scheduler) now() time.Time {

@@ -124,8 +124,8 @@ func TestChannelGone(t *testing.T) {
 	gone := func(code rest.JSONErrorCode) error { return &rest.Error{Code: code} }
 	for err, want := range map[error]bool{
 		gone(rest.JSONErrorCodeUnknownChannel):                 true,
-		gone(rest.JSONErrorCodeMissingAccess):                  true,
-		gone(rest.JSONErrorCodeLackPermissionsToPerformAction): true,
+		gone(rest.JSONErrorCodeMissingAccess):                  false, // may be temporary: a failed send
+		gone(rest.JSONErrorCodeLackPermissionsToPerformAction): false,
 		gone(rest.JSONErrorCodeUnknownMessage):                 false,
 		&rest.Error{Response: &http.Response{StatusCode: 502}}: false,
 		errors.New("connection reset"):                         false,

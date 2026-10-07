@@ -369,15 +369,17 @@ func (c *Ask) Remind(ctx context.Context, user snowflake.ID, name, text string) 
 	} else if !ok {
 		return "", errNoAllowance
 	}
-	ctx, cancel := context.WithTimeout(ctx, remindTimeout)
+	// The time limit covers waiting and wording; charging below uses ctx, so
+	// an answer that arrives just in time is still paid for.
+	wctx, cancel := context.WithTimeout(ctx, remindTimeout)
 	defer cancel()
-	if err := c.acquire(ctx); err != nil {
+	if err := c.acquire(wctx); err != nil {
 		return "", err
 	}
 	prompt := fmt.Sprintf("[reminder] It's time for a reminder %s set for themselves: %q. "+
 		"Write the message that reminds them: one or two short, friendly sentences in the reminder's language. "+
 		"Don't ask anything back.", name, text)
-	answer, err := c.LLM.Complete(ctx, llm.Request{Conversation: []llm.Message{{Role: llm.User, Name: name, Content: prompt}}})
+	answer, err := c.LLM.Complete(wctx, llm.Request{Conversation: []llm.Message{{Role: llm.User, Name: name, Content: prompt}}})
 	c.release()
 	if err != nil {
 		return "", err

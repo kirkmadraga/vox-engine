@@ -35,7 +35,8 @@ func TestParseOneOff(t *testing.T) {
 		{"tomorrow x", at(2026, 10, 8, 9, 0), "x"},
 		{"tomorrow at 7:15am x", at(2026, 10, 8, 7, 15), "x"},
 		{"on friday x", at(2026, 10, 9, 9, 0), "x"},
-		{"on wed x", at(2026, 10, 14, 9, 0), "x"}, // today is Wednesday: next week's
+		{"on wed x", at(2026, 10, 14, 9, 0), "x"},                // today is Wednesday, 09:00 passed: next week's
+		{"on wednesday at 20:00 x", at(2026, 10, 7, 20, 0), "x"}, // ...but 20:00 is still ahead: today
 		{"on fri at 20:00 x", at(2026, 10, 9, 20, 0), "x"},
 		{"on 2026-12-24 wrap gifts", at(2026, 12, 24, 9, 0), "wrap gifts"},
 		{"on 2026-12-24 at 20:00 x", at(2026, 12, 24, 20, 0), "x"},
@@ -62,7 +63,6 @@ func TestParseRepeating(t *testing.T) {
 		{"every 1h30m x", now.Add(90 * time.Minute), "every 1h 30m"},
 		{"every 3d x", now.Add(72 * time.Hour), "every 3d"},
 		{"every day at 08:00 standup", at(2026, 10, 8, 8, 0), "every day at 08:00"},
-		{"daily at 8am x", at(2026, 10, 8, 8, 0), "every day at 08:00"},
 		{"every day x", at(2026, 10, 8, 9, 0), "every day at 09:00"},
 		{"every day at 15:00 x", at(2026, 10, 7, 15, 0), "every day at 15:00"}, // later today
 		{"every weekday at 9:00 x", at(2026, 10, 8, 9, 0), "every weekday at 09:00"},
@@ -91,6 +91,10 @@ func TestParseRefuses(t *testing.T) {
 		"in 400d x",                // over a year
 		"on 2025-01-01 x",          // past
 		"tonight x", "next week x", // fuzzy words aren't guessed
+		"daily at 8am x", // not a form: "every day at 8am"
+		"on +12-24 x", "on 12-+24 x", "on 2026-012-24 x",
+		// Huge numbers used to overflow and wrap into a plausible duration.
+		"every 213505d x", "every 30501w x", "in 213505d x", "in 999999w x", "every 999999w999999d x",
 	} {
 		if w, text, err := Parse(in, now, zone8); err == nil {
 			t.Errorf("%q: want an error, got %v %+v %q", in, w.At, w.Rule, text)
@@ -98,6 +102,18 @@ func TestParseRefuses(t *testing.T) {
 	}
 	if _, _, err := Parse("soon x", now, zone8); !errors.Is(err, ErrUsage) {
 		t.Errorf("an unknown start: %v, want ErrUsage", err)
+	}
+}
+
+// "at" less than a minute ahead is still today, and times are whole seconds,
+// rounded up so a reminder never fires early.
+func TestParseSecondsAndTheNearFuture(t *testing.T) {
+	almost := time.Date(2026, 10, 7, 18, 29, 30, 500, zone8) // 30.5 s before 18:30
+	if w, _, err := Parse("at 18:30 x", almost, zone8); err != nil || !w.At.Equal(at(2026, 10, 7, 18, 30)) {
+		t.Errorf("at 18:30 from 18:29:30: %v, %v", w.At, err)
+	}
+	if w, _, err := Parse("in 45m x", almost, zone8); err != nil || !w.At.Equal(time.Date(2026, 10, 7, 19, 14, 31, 0, zone8)) {
+		t.Errorf("in 45m from 18:29:30.0000005: %v, %v", w.At, err)
 	}
 }
 
