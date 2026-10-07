@@ -271,7 +271,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 	for i, s := range f.OwnerUserIDs {
 		s = strings.TrimSpace(s)
 		if exampleOwnerIDs[s] {
-			return Config{}, fmt.Errorf("owner_user_ids[%d] is still the example value %s; replace it with your Discord user ID (Developer Mode, then right-click yourself, Copy User ID)", i, s)
+			return Config{}, fmt.Errorf("owner_user_ids[%d] is still the example value %s; replace it with your Discord user ID", i, s)
 		}
 		id, err := snowflake.Parse(s)
 		if err != nil || id == 0 {

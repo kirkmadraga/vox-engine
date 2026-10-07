@@ -84,9 +84,8 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
    slash commands itself at startup.
 2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 3. Copy `config.example.yaml` to `config.yaml`, then:
-   - put your Discord user ID in `owner_user_ids` (in Discord: Settings →
-     Advanced → Developer Mode on, then right-click your name → Copy User ID;
-     the bot refuses to start with the example IDs still there);
+   - put your Discord user ID in `owner_user_ids` (the bot refuses to start
+     with the example IDs still there);
    - pick `ytdlp_js_runtime` (`deno` or `node`; `quickjs` on old CPUs).
 
    The other settings are documented in the file.
