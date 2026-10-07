@@ -73,7 +73,8 @@ func TestE2EAskWorksInEveryChannel(t *testing.T) {
 		}
 	}
 	// The old channel setup is just an unknown form of allow now.
-	e.wantReply(e2eOwner, allowedG, "allow ask", "Usage: `allow guild [serverID]` (defaults to this server) or `allow @user [command]` (defaults to `play`).")
+	e.wantReply(e2eOwner, allowedG, "allow ask", "Usage: `allow guild [serverID]` (defaults to this server), `allow @user [command]`, "+
+		"`allow everyone [command]` (everyone in this server) or `allow public [command]` (everyone, in every server); the command defaults to `play`.")
 }
 
 func TestE2EAskFallback(t *testing.T) {

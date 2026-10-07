@@ -91,12 +91,13 @@ func (m *Memory) DeleteReminder(_ context.Context, id int64) (bool, error) {
 	return n > 0, err
 }
 
-func (m *Memory) DeleteUserReminders(_ context.Context, user snowflake.ID) (int, error) {
-	return m.deleteWhere(func(r remind.Reminder) bool { return r.UserID == user })
-}
-
-func (m *Memory) DeleteGuildReminders(_ context.Context, guild snowflake.ID, keep []snowflake.ID) (int, error) {
-	return m.deleteWhere(func(r remind.Reminder) bool { return r.GuildID == guild && !slices.Contains(keep, r.UserID) })
+func (m *Memory) AllReminders(context.Context) ([]remind.Reminder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return nil, m.Fail
+	}
+	return m.sorted(), nil
 }
 
 func (m *Memory) deleteWhere(f func(remind.Reminder) bool) (int, error) {

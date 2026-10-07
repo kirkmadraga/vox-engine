@@ -39,10 +39,10 @@ func BackendContract(t *testing.T, open Factory) {
 	t.Run("starts empty", func(t *testing.T) {
 		b, _ := open(t)
 		snap := snap(t, b)
-		if len(snap.Guilds) != 0 || len(snap.Grants) != 0 {
+		if len(snap.Guilds) != 0 || len(snap.Grants) != 0 || len(snap.Open) != 0 {
 			t.Errorf("snapshot = %+v, want empty", snap)
 		}
-		if guildOK(t, b, guildA) || grantOK(t, b, userA, "play") {
+		if guildOK(t, b, guildA) || grantOK(t, b, userA, "play") || openOK(t, b, access.Public, "play") {
 			t.Error("empty backend reports entries")
 		}
 	})
@@ -91,6 +91,48 @@ func BackendContract(t *testing.T, open Factory) {
 		}
 	})
 
+	t.Run("open and close commands", func(t *testing.T) {
+		b, _ := open(t)
+		expect(t, "open", true)(b.OpenCommand(ctx, guildA, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open again", false)(b.OpenCommand(ctx, guildA, "play", access.Entry{AddedBy: userA, AddedAt: t2}))
+		expect(t, "open public", true)(b.OpenCommand(ctx, access.Public, "remindme", access.Entry{AddedBy: owner, AddedAt: t1}))
+		for _, c := range []struct {
+			guild   snowflake.ID
+			command string
+			want    bool
+		}{
+			{guildA, "play", true},
+			{guildB, "play", false},        // other guild
+			{access.Public, "play", false}, // a guild's opening isn't public
+			{guildA, "remindme", false},    // public isn't stored per guild
+			{access.Public, "remindme", true},
+			{guildA, "ask", false},
+		} {
+			if got := openOK(t, b, c.guild, c.command); got != c.want {
+				t.Errorf("CommandOpen(%d, %q) = %v, want %v", c.guild, c.command, got, c.want)
+			}
+		}
+		if s := snap(t, b); len(s.Open) != 2 || s.Open[1].AddedBy != owner || !s.Open[1].AddedAt.Equal(t1) {
+			t.Errorf("second open must not overwrite the original entry: %+v", s.Open)
+		}
+		expect(t, "close", true)(b.CloseCommand(ctx, guildA, "play"))
+		expect(t, "close again", false)(b.CloseCommand(ctx, guildA, "play"))
+		expect(t, "close in the wrong guild", false)(b.CloseCommand(ctx, guildB, "remindme"))
+		if openOK(t, b, guildA, "play") || !openOK(t, b, access.Public, "remindme") {
+			t.Error("close removed the wrong entry")
+		}
+	})
+
+	t.Run("deny guild keeps open commands", func(t *testing.T) {
+		b, _ := open(t)
+		expect(t, "allow", true)(b.AllowGuild(ctx, guildA, access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open", true)(b.OpenCommand(ctx, guildA, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "deny", true)(b.DenyGuild(ctx, guildA))
+		if !openOK(t, b, guildA, "play") {
+			t.Error("denying a guild must not forget its open commands")
+		}
+	})
+
 	t.Run("snapshot is sorted and complete", func(t *testing.T) {
 		b, _ := open(t)
 		expect(t, "allow A", true)(b.AllowGuild(ctx, guildA, access.Entry{AddedBy: owner, AddedAt: t1}))
@@ -98,6 +140,10 @@ func BackendContract(t *testing.T, open Factory) {
 		expect(t, "grant A play", true)(b.Grant(ctx, userA, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
 		expect(t, "grant A image", true)(b.Grant(ctx, userA, "image", access.Entry{AddedBy: owner, AddedAt: t2}))
 		expect(t, "grant B play", true)(b.Grant(ctx, userB, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open A play", true)(b.OpenCommand(ctx, guildA, "play", access.Entry{AddedBy: owner, AddedAt: t2}))
+		expect(t, "open B remindme", true)(b.OpenCommand(ctx, guildB, "remindme", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open B ask", true)(b.OpenCommand(ctx, guildB, "ask", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open public play", true)(b.OpenCommand(ctx, access.Public, "play", access.Entry{AddedBy: userA, AddedAt: t1}))
 
 		got := snap(t, b)
 		want := access.Snapshot{
@@ -109,6 +155,12 @@ func BackendContract(t *testing.T, open Factory) {
 				{UserID: userB, Command: "play", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
 				{UserID: userA, Command: "image", Entry: access.Entry{AddedBy: owner, AddedAt: t2}},
 				{UserID: userA, Command: "play", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
+			},
+			Open: []access.OpenEntry{
+				{GuildID: access.Public, Command: "play", Entry: access.Entry{AddedBy: userA, AddedAt: t1}},
+				{GuildID: guildB, Command: "ask", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
+				{GuildID: guildB, Command: "remindme", Entry: access.Entry{AddedBy: owner, AddedAt: t1}},
+				{GuildID: guildA, Command: "play", Entry: access.Entry{AddedBy: owner, AddedAt: t2}},
 			},
 		}
 		if !snapshotsEqual(got, want) {
@@ -124,7 +176,14 @@ func BackendContract(t *testing.T, open Factory) {
 		expect(t, "grant B", true)(b.Grant(ctx, userB, "play", access.Entry{AddedBy: owner, AddedAt: t2}))
 		expect(t, "deny B", true)(b.DenyGuild(ctx, guildB))
 		expect(t, "revoke B", true)(b.Revoke(ctx, userB, "play"))
+		expect(t, "open A", true)(b.OpenCommand(ctx, guildA, "play", access.Entry{AddedBy: owner, AddedAt: t2}))
+		expect(t, "open public", true)(b.OpenCommand(ctx, access.Public, "remindme", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "open B", true)(b.OpenCommand(ctx, guildB, "play", access.Entry{AddedBy: owner, AddedAt: t1}))
+		expect(t, "close B", true)(b.CloseCommand(ctx, guildB, "play"))
 		before := snap(t, b)
+		if len(before.Open) != 2 {
+			t.Fatalf("open before reopen: %+v", before.Open)
+		}
 
 		after := snap(t, reopen(t))
 		if !snapshotsEqual(before, after) {
@@ -156,8 +215,14 @@ func BackendContract(t *testing.T, open Factory) {
 }
 
 func snapshotsEqual(a, b access.Snapshot) bool {
-	if len(a.Guilds) != len(b.Guilds) || len(a.Grants) != len(b.Grants) {
+	if len(a.Guilds) != len(b.Guilds) || len(a.Grants) != len(b.Grants) || len(a.Open) != len(b.Open) {
 		return false
+	}
+	for i := range a.Open {
+		x, y := a.Open[i], b.Open[i]
+		if x.GuildID != y.GuildID || x.Command != y.Command || x.AddedBy != y.AddedBy || !x.AddedAt.Equal(y.AddedAt) {
+			return false
+		}
 	}
 	for i := range a.Guilds {
 		x, y := a.Guilds[i], b.Guilds[i]
@@ -202,6 +267,15 @@ func guildOK(t *testing.T, b access.Backend, guildID snowflake.ID) bool {
 	ok, err := b.GuildAllowed(context.Background(), guildID)
 	if err != nil {
 		t.Fatalf("GuildAllowed: %v", err)
+	}
+	return ok
+}
+
+func openOK(t *testing.T, b access.Backend, guildID snowflake.ID, command string) bool {
+	t.Helper()
+	ok, err := b.CommandOpen(context.Background(), guildID, command)
+	if err != nil {
+		t.Fatalf("CommandOpen: %v", err)
 	}
 	return ok
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/kirkmadraga/vox-engine/internal/access"
+	"github.com/kirkmadraga/vox-engine/internal/remind"
 )
 
 // ManagementCommands are owner-only and can never be granted.
@@ -30,21 +31,28 @@ type AccessManager interface {
 	DenyGuild(ctx context.Context, guildID, by snowflake.ID) (bool, error)
 	Grant(ctx context.Context, userID snowflake.ID, command string, by snowflake.ID) (bool, error)
 	Revoke(ctx context.Context, userID snowflake.ID, command string, by snowflake.ID) (bool, error)
+	Open(ctx context.Context, guildID snowflake.ID, command string, by snowflake.ID) (bool, error)
+	Close(ctx context.Context, guildID snowflake.ID, command string, by snowflake.ID) (bool, error)
+	Check(ctx context.Context, userID, guildID snowflake.ID, command string) (bool, error)
 	Snapshot(ctx context.Context) (access.Snapshot, error)
 }
 
 const saveFailed = "Couldn't save that change, so nothing changed. Details are in the bot's log."
 
 // target is what "allow"/"deny" act on: a guild (guildID 0 means the current
-// one), or a user and a command.
+// one), a user and a command, or a command for everyone in this guild
+// (everyone) or in every guild (public).
 type target struct {
-	guild   bool
-	guildID snowflake.ID
-	user    snowflake.ID
-	command string
+	guild    bool
+	guildID  snowflake.ID
+	user     snowflake.ID
+	everyone bool
+	public   bool
+	command  string
 }
 
-// parseTarget parses "guild [guildID]" or "<@id> [command]".
+// parseTarget parses "guild [guildID]", "<@id> [command]", "everyone
+// [command]" or "public [command]".
 func parseTarget(args string) (target, bool) {
 	fields := strings.Fields(args)
 	if len(fields) == 0 || len(fields) > 2 {
@@ -60,16 +68,56 @@ func parseTarget(args string) (target, bool) {
 		}
 		return target{guild: true, guildID: id}, true
 	}
-	user, ok := parseUserMention(fields[0])
-	if !ok {
-		return target{}, false
+	t := target{command: DefaultGrantCommand}
+	switch {
+	case strings.EqualFold(fields[0], "everyone"):
+		t.everyone = true
+	case strings.EqualFold(fields[0], "public"):
+		t.public = true
+	default:
+		user, ok := parseUserMention(fields[0])
+		if !ok {
+			return target{}, false
+		}
+		t.user = user
 	}
-	t := target{user: user, command: DefaultGrantCommand}
 	if len(fields) == 2 {
 		t.command = strings.ToLower(fields[1])
 	}
 	return t, true
 }
+
+// opening resolves an everyone or public target to the guild it's stored
+// under and who it reaches, for replies.
+func opening(t target, req Request) (snowflake.ID, string) {
+	if t.public {
+		return access.Public, "everyone, in every server I'm in"
+	}
+	return req.GuildID, "everyone in this server"
+}
+
+// refusal explains why command can't be granted or opened ("" for other
+// errors). done is "granted" or "opened"; instead is "Grant" or "Open".
+func refusal(am AccessManager, err error, command, done, instead string) string {
+	switch {
+	case errors.Is(err, access.ErrOwnerOnly):
+		return fmt.Sprintf("`%s` is owner-only and can't be %s.", command, done)
+	case errors.Is(err, access.ErrAlwaysOpen):
+		return fmt.Sprintf("`%s` is always open to everyone in allowed servers.", command)
+	case errors.Is(err, access.ErrInherited):
+		parent, _ := am.InheritsFrom(command)
+		return fmt.Sprintf("`%s` comes with `%s` access. %s `%s` instead.", command, parent, instead, parent)
+	}
+	return ""
+}
+
+const (
+	allowUsage = "Usage: `allow guild [serverID]` (defaults to this server), `allow @user [command]`, " +
+		"`allow everyone [command]` (everyone in this server) or `allow public [command]` (everyone, in every server); " +
+		"the command defaults to `%s`."
+	denyUsage = "Usage: `deny guild [serverID]` (defaults to this server), `deny @user [command]`, " +
+		"`deny everyone [command]` or `deny public [command]`; the command defaults to `%s`."
+)
 
 // parseUserMention parses exactly "<@id>" or "<@!id>".
 func parseUserMention(s string) (snowflake.ID, bool) {
@@ -97,7 +145,8 @@ func reply(ctx context.Context, req Request, format string, a ...any) error {
 	return req.Reply.Reply(ctx, Reply{Content: fmt.Sprintf(format, a...)})
 }
 
-// Allow is "@Bot allow guild [guildID]" and "@Bot allow @user [command]".
+// Allow is "@Bot allow guild [guildID]", "@Bot allow @user [command]",
+// "@Bot allow everyone [command]" and "@Bot allow public [command]".
 // The guild ID is not checked against the servers the bot is in (no guild cache),
 // so an owner can pre-allow a server before inviting the bot.
 type Allow struct {
@@ -110,7 +159,10 @@ func (Allow) Name() string { return "allow" }
 func (c Allow) Run(ctx context.Context, req Request) error {
 	t, ok := parseTarget(req.Args)
 	if !ok {
-		return reply(ctx, req, "Usage: `allow guild [serverID]` (defaults to this server) or `allow @user [command]` (defaults to `%s`).", DefaultGrantCommand)
+		return reply(ctx, req, allowUsage, DefaultGrantCommand)
+	}
+	if t.everyone || t.public {
+		return c.open(ctx, req, t)
 	}
 	if t.guild {
 		gid, name := guildTarget(t, req)
@@ -132,52 +184,82 @@ func (c Allow) Run(ctx context.Context, req Request) error {
 		return reply(ctx, req, "There's no `%s` command (yet).", t.command)
 	}
 	changed, err := c.Access.Grant(ctx, t.user, t.command, req.AuthorID)
+	if why := refusal(c.Access, err, t.command, "granted", "Grant"); why != "" {
+		return reply(ctx, req, "%s", why)
+	}
 	switch {
-	case errors.Is(err, access.ErrOwnerOnly):
-		return reply(ctx, req, "`%s` is owner-only and can't be granted.", t.command)
-	case errors.Is(err, access.ErrPublic):
-		return reply(ctx, req, "`%s` is already open to everyone in allowed servers.", t.command)
-	case errors.Is(err, access.ErrInherited):
-		parent, _ := c.Access.InheritsFrom(t.command)
-		return reply(ctx, req, "`%s` comes with `%s` access. Grant `%s` instead.", t.command, parent, parent)
 	case err != nil:
 		return reply(ctx, req, saveFailed)
 	case !changed:
 		return reply(ctx, req, "%s already had `%s`.", who, t.command)
 	}
 	msg := fmt.Sprintf("%s can now use `%s` in allowed servers.", who, t.command)
-	if allowed, err := c.Access.GuildAllowed(ctx, req.GuildID); err == nil && !allowed {
-		msg += "\nNote: this server isn't allowed yet. Use `allow guild` to enable it here."
+	return reply(ctx, req, "%s%s", msg, c.notAllowedNote(ctx, req))
+}
+
+// open is "allow everyone/public [command]".
+func (c Allow) open(ctx context.Context, req Request, t target) error {
+	gid, whom := opening(t, req)
+	if !c.Known(t.command) {
+		return reply(ctx, req, "There's no `%s` command (yet).", t.command)
 	}
-	return reply(ctx, req, "%s", msg)
-}
-
-// Deny is "@Bot deny guild [guildID]" and "@Bot deny @user [command]".
-// Taking away remindme deletes that person's reminders, and denying a server
-// deletes the reminders set there (except Owners', who keep their access).
-type Deny struct {
-	Access    AccessManager
-	Reminders ReminderDeleter // nil = no reminders to clean up
-	Owners    []snowflake.ID
-}
-
-// ReminderDeleter removes reminders when access goes. remind.Store implements it.
-type ReminderDeleter interface {
-	DeleteUserReminders(ctx context.Context, user snowflake.ID) (int, error)
-	DeleteGuildReminders(ctx context.Context, guild snowflake.ID, keep []snowflake.ID) (int, error)
-}
-
-// reminderNote reports reminders deleted along with access, if any.
-func reminderNote(n int, err error) string {
+	changed, err := c.Access.Open(ctx, gid, t.command, req.AuthorID)
+	if errors.Is(err, access.ErrAlwaysOpen) { // only "everyone" gets here: public is accepted
+		return reply(ctx, req, "`%s` is always open to everyone in allowed servers. Use `allow public %s` for every server.", t.command, t.command)
+	}
+	if why := refusal(c.Access, err, t.command, "opened", "Open"); why != "" {
+		return reply(ctx, req, "%s", why)
+	}
 	switch {
 	case err != nil:
-		return "\nCouldn't delete the reminders that went with it; they'll be dropped when due."
-	case n == 1:
-		return "\nIts 1 reminder was deleted."
-	case n > 1:
-		return fmt.Sprintf("\nIts %d reminders were deleted.", n)
+		return reply(ctx, req, saveFailed)
+	case !changed:
+		return reply(ctx, req, "`%s` was already open to %s.", t.command, whom)
+	}
+	note := ""
+	if t.everyone {
+		note = c.notAllowedNote(ctx, req)
+	} else {
+		note = publicWarning(t.command)
+	}
+	return reply(ctx, req, "`%s` is now open to %s.%s", t.command, whom, note)
+}
+
+// publicWarning is the reply's note on opening command publicly: strangers
+// can add the bot (Discord's "Public Bot" is on by default) and use it.
+func publicWarning(command string) string {
+	cost := ""
+	if command == AskCommand {
+		cost = ", each with their own daily allowance, all on your API key"
+	}
+	return "\nAnyone who can add me to a server can use it there" + cost + ". To keep it to your own servers, " +
+		"turn off **Public Bot** in the Developer Portal (your app → Bot), so only you can add me."
+}
+
+// notAllowedNote warns when this server isn't allowed, so a grant or an
+// opening doesn't work here yet.
+func (c Allow) notAllowedNote(ctx context.Context, req Request) string {
+	if allowed, err := c.Access.GuildAllowed(ctx, req.GuildID); err == nil && !allowed {
+		return "\nNote: this server isn't allowed yet. Use `allow guild` to enable it here."
 	}
 	return ""
+}
+
+// Deny is "@Bot deny guild [guildID]", "@Bot deny @user [command]",
+// "@Bot deny everyone [command]" and "@Bot deny public [command]".
+// Whenever that can take remindme away from someone, the reminders whose
+// owner can no longer use remindme where they set them are deleted; the rest
+// (including owners') are kept.
+type Deny struct {
+	Access    AccessManager
+	Reminders ReminderPruner // nil = no reminders to clean up
+}
+
+// ReminderPruner lets Deny find and delete reminders that lost their access.
+// remind.Store implements it.
+type ReminderPruner interface {
+	AllReminders(ctx context.Context) ([]remind.Reminder, error)
+	DeleteReminder(ctx context.Context, id int64) (bool, error)
 }
 
 func (Deny) Name() string { return "deny" }
@@ -185,7 +267,18 @@ func (Deny) Name() string { return "deny" }
 func (c Deny) Run(ctx context.Context, req Request) error {
 	t, ok := parseTarget(req.Args)
 	if !ok {
-		return reply(ctx, req, "Usage: `deny guild [serverID]` (defaults to this server) or `deny @user [command]` (defaults to `%s`).", DefaultGrantCommand)
+		return reply(ctx, req, denyUsage, DefaultGrantCommand)
+	}
+	if t.everyone || t.public {
+		gid, whom := opening(t, req)
+		changed, err := c.Access.Close(ctx, gid, t.command, req.AuthorID)
+		switch {
+		case err != nil:
+			return reply(ctx, req, saveFailed)
+		case !changed:
+			return reply(ctx, req, "`%s` wasn't open to %s.", t.command, whom)
+		}
+		return reply(ctx, req, "`%s` is no longer open to %s.%s", t.command, whom, c.pruneIf(ctx, t.command))
 	}
 	if t.guild {
 		gid, name := guildTarget(t, req)
@@ -196,11 +289,8 @@ func (c Deny) Run(ctx context.Context, req Request) error {
 		case !changed:
 			return reply(ctx, req, "%s wasn't allowed.", name)
 		}
-		note := ""
-		if c.Reminders != nil {
-			note = reminderNote(c.Reminders.DeleteGuildReminders(ctx, gid, c.Owners))
-		}
-		return reply(ctx, req, "%s is no longer allowed. I'll only respond to owners there.%s", name, note)
+		return reply(ctx, req, "%s is no longer allowed. Only owners and public commands work there now.%s%s",
+			name, c.keptOpenings(ctx, gid), c.pruneIf(ctx, RemindCommand))
 	}
 
 	who := Mention(t.user)
@@ -215,11 +305,75 @@ func (c Deny) Run(ctx context.Context, req Request) error {
 	case !changed:
 		return reply(ctx, req, "%s didn't have `%s`.", who, t.command)
 	}
-	note := ""
-	if t.command == RemindCommand && c.Reminders != nil {
-		note = strings.Replace(reminderNote(c.Reminders.DeleteUserReminders(ctx, t.user)), "Its", "Their", 1)
+	return reply(ctx, req, "%s can no longer use `%s`.%s", who, t.command, c.pruneIf(ctx, t.command))
+}
+
+// keptOpenings mentions the commands opened to everyone in guild, which a
+// denied guild keeps (inactive) and gets back if it's allowed again.
+func (c Deny) keptOpenings(ctx context.Context, guild snowflake.ID) string {
+	snap, err := c.Access.Snapshot(ctx)
+	if err != nil {
+		return ""
 	}
-	return reply(ctx, req, "%s can no longer use `%s`.%s", who, t.command, note)
+	var cmds []string
+	for _, o := range snap.Open {
+		if o.GuildID == guild {
+			cmds = append(cmds, "`"+o.Command+"`")
+		}
+	}
+	switch len(cmds) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("\nIts open command (%s) comes back if you allow it again.", cmds[0])
+	}
+	return fmt.Sprintf("\nIts %d open commands (%s) come back if you allow it again.", len(cmds), strings.Join(cmds, ", "))
+}
+
+// pruneIf deletes the reminders that lost their access, when command (what
+// was taken away) is remindme, and says how many went.
+func (c Deny) pruneIf(ctx context.Context, command string) string {
+	if command != RemindCommand || c.Reminders == nil {
+		return ""
+	}
+	n, err := c.prune(ctx)
+	switch {
+	case err != nil:
+		return "\nCouldn't check all the reminders that went with it; any left will be dropped when due."
+	case n == 1:
+		return "\n1 reminder that went with it was deleted."
+	case n > 1:
+		return fmt.Sprintf("\n%d reminders that went with it were deleted.", n)
+	}
+	return ""
+}
+
+// prune deletes every reminder whose owner can no longer use remindme in the
+// server it was set in. It stops at the first storage error, so a failing
+// access check never reads as "no access".
+func (c Deny) prune(ctx context.Context) (int, error) {
+	rs, err := c.Reminders.AllReminders(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rs {
+		ok, err := c.Access.Check(ctx, r.UserID, r.GuildID, RemindCommand)
+		if err != nil {
+			return n, err
+		}
+		if ok {
+			continue
+		}
+		deleted, err := c.Reminders.DeleteReminder(ctx, r.ID)
+		if err != nil {
+			return n, err
+		}
+		if deleted {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // FormatAccess renders a snapshot for Discord. Times use Discord timestamps,
@@ -253,6 +407,42 @@ func FormatAccess(snap access.Snapshot, currentGuild snowflake.ID) string {
 	}
 	for _, u := range users {
 		fmt.Fprintf(&b, "- %s: %s\n", Mention(u), strings.Join(cmds[u], ", "))
+	}
+
+	// Group open commands by guild; sorted by guild (Public first) then command.
+	var guilds []snowflake.ID
+	open := map[snowflake.ID][]string{}
+	for _, o := range snap.Open {
+		if _, seen := open[o.GuildID]; !seen {
+			guilds = append(guilds, o.GuildID)
+		}
+		open[o.GuildID] = append(open[o.GuildID], "`"+o.Command+"`")
+	}
+	fmt.Fprintf(&b, "**Open to everyone** (%d)\n", len(snap.Open))
+	if len(snap.Open) == 0 {
+		b.WriteString("none. Use `allow everyone [command]` in a server, or `allow public [command]` for every server.\n")
+	}
+	allowed := map[snowflake.ID]bool{}
+	for _, g := range snap.Guilds {
+		allowed[g.GuildID] = true
+	}
+	for _, g := range guilds {
+		if g == access.Public {
+			fmt.Fprintf(&b, "- every server (public): %s\n", strings.Join(open[g], ", "))
+			continue
+		}
+		var notes []string
+		if g == currentGuild {
+			notes = append(notes, "this server")
+		}
+		if !allowed[g] {
+			notes = append(notes, "not allowed: inactive")
+		}
+		where := fmt.Sprintf("`%s`", g)
+		if len(notes) > 0 {
+			where += " (" + strings.Join(notes, ", ") + ")"
+		}
+		fmt.Fprintf(&b, "- %s: %s\n", where, strings.Join(open[g], ", "))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -61,8 +61,22 @@ func guildData(verb, id string) string {
 	return `{"id":"1","name":"` + verb + `","type":1,"options":[{"name":"guild","type":1,"options":[` + opts + `]}]}`
 }
 
+// openData is "/allow everyone" or "/deny public" etc., with an optional command.
+func openData(verb, scope, command string) string {
+	opts := ""
+	if command != "" {
+		opts = `{"name":"command","type":3,"value":"` + command + `"}`
+	}
+	return `{"id":"1","name":"` + verb + `","type":1,"options":[{"name":"` + scope + `","type":1,"options":[` + opts + `]}]}`
+}
+
 func TestSlashArgs(t *testing.T) {
 	cases := map[string]string{
+		openData("allow", "everyone", ""):           "everyone",
+		openData("allow", "everyone", "remindme"):   "everyone remindme",
+		openData("deny", "public", "play"):          "public play",
+		openData("deny", "everyone", "ask"):         "everyone ask",
+		openData("allow", "public", ""):             "public",
 		playData("never gonna give you up"):         "never gonna give you up",
 		playData("  https://youtu.be/dQw4w9WgXcQ "): "https://youtu.be/dQw4w9WgXcQ",
 		playData("2"):                           "2",
@@ -127,6 +141,28 @@ func TestSlashCommandsMatchRegistry(t *testing.T) {
 		cmd := user.Options[1].(discord.ApplicationCommandOptionString)
 		if len(cmd.Choices) != 1 || cmd.Choices[0].Value != "play" {
 			t.Errorf("/%s user command choices = %+v", verb, cmd.Choices)
+		}
+		var subs []string
+		for i, o := range byName[verb].Options {
+			sub := o.(discord.ApplicationCommandOptionSubCommand)
+			subs = append(subs, sub.Name)
+			if len(sub.Description) == 0 || len(sub.Description) > 100 {
+				t.Errorf("/%s %s: description must be 1-100 characters, got %d", verb, sub.Name, len(sub.Description))
+			}
+			if i < 2 {
+				continue
+			}
+			// everyone and public: just the command, optional, same choices.
+			if len(sub.Options) != 1 {
+				t.Fatalf("/%s %s options = %+v", verb, sub.Name, sub.Options)
+			}
+			c := sub.Options[0].(discord.ApplicationCommandOptionString)
+			if c.Name != "command" || c.Required || len(c.Choices) != 1 || c.Choices[0].Value != "play" {
+				t.Errorf("/%s %s command = %+v", verb, sub.Name, c)
+			}
+		}
+		if !slices.Equal(subs, []string{"guild", "user", "everyone", "public"}) {
+			t.Errorf("/%s subcommands = %q", verb, subs)
 		}
 	}
 }
@@ -233,7 +269,7 @@ func newSlashE2E(t *testing.T) *slashE2E {
 		inherit[c] = "play"
 	}
 	policy := access.NewPolicy(accesstest.NewMemory(), access.Options{
-		Owners: []snowflake.ID{owner}, Public: []string{"ping"}, OwnerOnly: commands.ManagementCommands, Inherit: inherit,
+		Owners: []snowflake.ID{owner}, AlwaysOpen: []string{"ping"}, OwnerOnly: commands.ManagementCommands, Inherit: inherit,
 	})
 	var reg *commands.Registry
 	known := func(name string) bool { _, ok := reg.Lookup(name); return ok }
@@ -323,6 +359,25 @@ func TestSlashAndMentionsShareThePolicy(t *testing.T) {
 		{stranger, allowedG, "play x", playData("x"), false, false},
 		{owner, allowedG, "deny <@8>", userData("deny", friend, ""), true, true},
 		{friend, allowedG, "play x", playData("x"), false, false}, // revoked
+		// Everyone in this server, then everyone everywhere.
+		{stranger, allowedG, "allow everyone", openData("allow", "everyone", ""), false, false}, // owners only
+		{owner, allowedG, "allow everyone", openData("allow", "everyone", ""), true, true},
+		{stranger, allowedG, "play x", playData("x"), true, false},
+		{stranger, allowedG, "queue", simpleData("queue"), true, false}, // inherits play
+		{friend, allowedG, "play x", playData("x"), true, false},        // no grant needed
+		{stranger, otherG, "play x", playData("x"), false, false},       // only that server
+		{stranger, allowedG, "what is jazz", askData("what is jazz"), false, false},
+		{owner, allowedG, "deny everyone play", openData("deny", "everyone", "play"), true, true},
+		{stranger, allowedG, "play x", playData("x"), false, false},
+		{stranger, allowedG, "allow public play", openData("allow", "public", "play"), false, false}, // owners only
+		{owner, allowedG, "allow public play", openData("allow", "public", "play"), true, true},
+		{stranger, otherG, "play x", playData("x"), true, false}, // any server, allowed or not
+		{stranger, otherG, "stop", simpleData("stop"), true, false},
+		{stranger, otherG, "ping", simpleData("ping"), false, false}, // ping still needs an allowed server
+		{stranger, allowedG, "play x", playData("x"), true, false},
+		{owner, allowedG, "deny public", openData("deny", "public", ""), true, true},
+		{stranger, otherG, "play x", playData("x"), false, false},
+		{stranger, allowedG, "play x", playData("x"), false, false},
 	}
 	for i, s := range steps {
 		if s.changesPolicy {
@@ -582,8 +637,8 @@ func TestSlashRemindMe(t *testing.T) {
 	t.Error("no /remindme, even with ask off")
 }
 
-// /allow and /deny have only "guild" and "user": no ask channels (removed in
-// v1.1.0), with or without ask.
+// /allow and /deny have "guild", "user", "everyone" and "public": no ask
+// channels (removed in v1.1.0), with or without ask.
 func TestAllowDenyHaveNoAskChannels(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, c := range SlashCommands([]string{"play"}, on, on) {
@@ -595,7 +650,7 @@ func TestAllowDenyHaveNoAskChannels(t *testing.T) {
 			for _, o := range s.Options {
 				subs = append(subs, o.(discord.ApplicationCommandOptionSubCommand).Name)
 			}
-			if !slices.Equal(subs, []string{"guild", "user"}) || strings.Contains(s.Description, "channel") {
+			if !slices.Equal(subs, []string{"guild", "user", "everyone", "public"}) || strings.Contains(s.Description, "channel") {
 				t.Errorf("/%s with ask=%v: subcommands %q, description %q", s.Name, on, subs, s.Description)
 			}
 		}

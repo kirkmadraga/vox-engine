@@ -30,11 +30,12 @@ var fixedNow = time.Date(2026, 9, 29, 5, 0, 0, 0, time.UTC)
 
 func newPolicy(b access.Backend, logger *slog.Logger) *access.Policy {
 	return access.NewPolicy(b, access.Options{
-		Owners:    []snowflake.ID{owner},
-		Public:    []string{"ping"},
-		OwnerOnly: []string{"allow", "deny", "access"},
-		Now:       func() time.Time { return fixedNow },
-		Logger:    logger,
+		Owners:     []snowflake.ID{owner},
+		AlwaysOpen: []string{"ping"},
+		OwnerOnly:  []string{"allow", "deny", "access"},
+		Inherit:    map[string]string{"skip": "play"},
+		Now:        func() time.Time { return fixedNow },
+		Logger:     logger,
 	})
 }
 
@@ -85,7 +86,7 @@ func TestGrantRefusals(t *testing.T) {
 	if _, err := p.Grant(ctx, friend, "Allow", owner); !errors.Is(err, access.ErrOwnerOnly) {
 		t.Errorf("grant owner-only: err = %v", err)
 	}
-	if _, err := p.Grant(ctx, friend, "ping", owner); !errors.Is(err, access.ErrPublic) {
+	if _, err := p.Grant(ctx, friend, "ping", owner); !errors.Is(err, access.ErrAlwaysOpen) {
 		t.Errorf("grant public: err = %v", err)
 	}
 	snap, _ := p.Snapshot(ctx)
@@ -145,6 +146,10 @@ func (failingBackend) AllowGuild(context.Context, snowflake.ID, access.Entry) (b
 	return false, errDown
 }
 
+func (failingBackend) CommandOpen(context.Context, snowflake.ID, string) (bool, error) {
+	return false, errDown
+}
+
 func TestBackendErrorsFailClosed(t *testing.T) {
 	ctx := context.Background()
 	var buf bytes.Buffer
@@ -160,6 +165,189 @@ func TestBackendErrorsFailClosed(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "storage down") {
 		t.Errorf("backend errors should be logged:\n%s", buf.String())
+	}
+	// Check hands the error back instead (for callers that delete on "no").
+	if ok, err := p.Check(ctx, other, guildA, "play"); ok || !errors.Is(err, errDown) {
+		t.Errorf("Check = %v, %v; want false and the error", ok, err)
+	}
+	if ok, err := p.Check(ctx, owner, guildA, "play"); !ok || err != nil {
+		t.Errorf("Check for an owner = %v, %v", ok, err)
+	}
+}
+
+// Each step of the check can fail on its own; none may fall through to "yes".
+func TestEachBackendErrorFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, failing := range []string{"public", "guild", "everyone", "grant"} {
+		mem := accesstest.NewMemory()
+		p := newPolicy(stepFailing{mem, failing}, nil)
+		p.AllowGuild(ctx, guildA, owner)
+		p.Grant(ctx, friend, "play", owner)
+		ok, err := p.Check(ctx, friend, guildA, "play")
+		if ok || !errors.Is(err, errDown) {
+			t.Errorf("%s failing: Check = %v, %v; want false and the error", failing, ok, err)
+		}
+	}
+}
+
+// stepFailing fails one step of the access check: the public lookup, the
+// guild allow-list, the guild's open commands, or the grants.
+type stepFailing struct {
+	*accesstest.Memory
+	step string
+}
+
+func (s stepFailing) CommandOpen(ctx context.Context, guildID snowflake.ID, command string) (bool, error) {
+	if (s.step == "public" && guildID == access.Public) || (s.step == "everyone" && guildID != access.Public) {
+		return false, errDown
+	}
+	return s.Memory.CommandOpen(ctx, guildID, command)
+}
+
+func (s stepFailing) GuildAllowed(ctx context.Context, guildID snowflake.ID) (bool, error) {
+	if s.step == "guild" {
+		return false, errDown
+	}
+	return s.Memory.GuildAllowed(ctx, guildID)
+}
+
+func (s stepFailing) HasGrant(ctx context.Context, userID snowflake.ID, command string) (bool, error) {
+	if s.step == "grant" {
+		return false, errDown
+	}
+	return s.Memory.HasGrant(ctx, userID, command)
+}
+
+// The levels, widest first: owner, public (any guild, allowed or not),
+// everyone in an allowed guild, then a personal grant in an allowed guild.
+func TestOpenCommandLevels(t *testing.T) {
+	ctx := context.Background()
+	const guildC snowflake.ID = 300 // allowed, nothing opened
+	p := newPolicy(accesstest.NewMemory(), nil)
+	p.AllowGuild(ctx, guildA, owner)
+	p.AllowGuild(ctx, guildC, owner)
+	mustChange(t, "open play in A", true)(p.Open(ctx, guildA, "play", owner))
+	mustChange(t, "open remindme publicly", true)(p.Open(ctx, access.Public, "REMINDME", owner))
+	mustChange(t, "open ask in B (not allowed)", true)(p.Open(ctx, guildB, "ask", owner))
+	p.Grant(ctx, friend, "ask", owner)
+
+	type check struct {
+		user    snowflake.ID
+		guild   snowflake.ID
+		command string
+		want    bool
+	}
+	run := func(stage string, cases []check) {
+		t.Helper()
+		for _, c := range cases {
+			if got := p.Allowed(ctx, c.user, c.guild, c.command); got != c.want {
+				t.Errorf("%s: Allowed(user %d, guild %d, %q) = %v, want %v", stage, c.user, c.guild, c.command, got, c.want)
+			}
+		}
+	}
+	run("opened", []check{
+		{other, guildA, "play", true},  // everyone in A
+		{other, guildA, "PLAY", true},  // case-insensitive
+		{other, guildA, "skip", true},  // inherits play
+		{other, guildC, "play", false}, // allowed, but not opened there
+		{other, guildB, "play", false}, // not allowed
+		{other, guildA, "remindme", true},
+		{other, guildB, "remindme", true}, // public ignores the guild list
+		{other, guildC, "remindme", true},
+		{other, guildB, "ask", false}, // everyone in B, but B isn't allowed
+		{friend, guildB, "ask", false},
+		{friend, guildA, "ask", true}, // the grant
+		{other, guildA, "ask", false},
+		{other, guildA, "allow", false}, // owner-only stays owner-only
+		{other, guildB, "ping", false},  // always-open still needs an allowed guild
+		{other, guildA, "ping", true},
+	})
+
+	p.DenyGuild(ctx, guildA, owner)
+	run("guild A denied", []check{
+		{other, guildA, "play", false},
+		{other, guildA, "skip", false},
+		{other, guildA, "remindme", true}, // public
+		{friend, guildA, "ask", false},
+	})
+	p.AllowGuild(ctx, guildA, owner)
+	run("guild A allowed again", []check{{other, guildA, "play", true}}) // its opening was kept
+
+	p.AllowGuild(ctx, guildB, owner)
+	run("guild B allowed", []check{{other, guildB, "ask", true}}) // opened before it was allowed
+
+	p.Grant(ctx, friend, "play", owner)
+	mustChange(t, "close play in A", true)(p.Close(ctx, guildA, "Play", owner))
+	mustChange(t, "close it again", false)(p.Close(ctx, guildA, "play", owner))
+	mustChange(t, "close remindme publicly", true)(p.Close(ctx, access.Public, "remindme", owner))
+	run("closed", []check{
+		{other, guildA, "play", false},
+		{friend, guildA, "play", true}, // their own grant
+		{friend, guildA, "skip", true},
+		{other, guildA, "remindme", false},
+		{other, guildB, "remindme", false},
+		{owner, guildB, "remindme", true},
+		{owner, guildA, "allow", true},
+	})
+	// A grant can't block a wider level: revoking friend's ask leaves B's opening.
+	p.Revoke(ctx, friend, "ask", owner)
+	run("revoked", []check{{friend, guildB, "ask", true}, {friend, guildA, "ask", false}})
+}
+
+func TestOpenRefusalsAndEntries(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	p := newPolicy(accesstest.NewMemory(), slog.New(slog.NewTextHandler(&buf, nil)))
+	for _, guild := range []snowflake.ID{guildA, access.Public} {
+		for cmd, want := range map[string]error{"Allow": access.ErrOwnerOnly, "SKIP": access.ErrInherited} {
+			if _, err := p.Open(ctx, guild, cmd, owner); !errors.Is(err, want) {
+				t.Errorf("open %q in %d: err = %v, want %v", cmd, guild, err, want)
+			}
+		}
+	}
+	// An always-open command can't be opened in one guild (it already is),
+	// nor granted, but it can be made public.
+	if _, err := p.Open(ctx, guildA, "ping", owner); !errors.Is(err, access.ErrAlwaysOpen) {
+		t.Errorf("open ping in a guild: err = %v, want ErrAlwaysOpen", err)
+	}
+	if _, err := p.Grant(ctx, friend, "ping", owner); !errors.Is(err, access.ErrAlwaysOpen) {
+		t.Errorf("grant ping: err = %v, want ErrAlwaysOpen", err)
+	}
+	if p.Allowed(ctx, other, guildB, "ping") {
+		t.Fatal("setup: ping in an unlisted guild")
+	}
+	mustChange(t, "open ping publicly", true)(p.Open(ctx, access.Public, "PING", owner))
+	if !p.Allowed(ctx, other, guildB, "ping") {
+		t.Error("public ping must work in an unlisted guild")
+	}
+	mustChange(t, "close public ping", true)(p.Close(ctx, access.Public, "ping", owner))
+	if p.Allowed(ctx, other, guildB, "ping") {
+		t.Error("ping still works in an unlisted guild after closing")
+	}
+	mustChange(t, "open", true)(p.Open(ctx, guildA, "Play", owner))
+	mustChange(t, "close a stale name", false)(p.Close(ctx, guildA, "nosuch", owner))
+	snap, _ := p.Snapshot(ctx)
+	if len(snap.Open) != 1 {
+		t.Fatalf("refused openings must not be stored: %+v", snap.Open)
+	}
+	if o := snap.Open[0]; o.GuildID != guildA || o.Command != "play" || o.AddedBy != owner || !o.AddedAt.Equal(fixedNow) {
+		t.Errorf("open entry = %+v (command must be stored lowercase)", o)
+	}
+	p.Close(ctx, guildA, "play", owner)
+	for _, want := range []string{"action=open", "action=close", "command=play"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log missing %s:\n%s", want, buf.String())
+		}
+	}
+}
+
+func mustChange(t *testing.T, what string, want bool) func(bool, error) {
+	t.Helper()
+	return func(changed bool, err error) {
+		t.Helper()
+		if err != nil || changed != want {
+			t.Errorf("%s: changed = %v, err = %v; want %v", what, changed, err, want)
+		}
 	}
 }
 
@@ -191,10 +379,10 @@ func TestGuildDenyRevokesPublicAccess(t *testing.T) {
 func TestInheritedCommandsShareParentAccess(t *testing.T) {
 	ctx := context.Background()
 	p := access.NewPolicy(accesstest.NewMemory(), access.Options{
-		Owners:    []snowflake.ID{owner},
-		Public:    []string{"ping"},
-		OwnerOnly: []string{"allow"},
-		Inherit:   map[string]string{"Skip": "play", "stop": "PLAY", "echo": "ping", "sneaky": "allow"},
+		Owners:     []snowflake.ID{owner},
+		AlwaysOpen: []string{"ping"},
+		OwnerOnly:  []string{"allow"},
+		Inherit:    map[string]string{"Skip": "play", "stop": "PLAY", "echo": "ping", "sneaky": "allow"},
 	})
 	p.AllowGuild(ctx, guildA, owner)
 	p.Grant(ctx, friend, "play", owner)

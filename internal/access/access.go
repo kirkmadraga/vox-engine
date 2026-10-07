@@ -31,6 +31,14 @@ type Backend interface {
 	Revoke(ctx context.Context, userID snowflake.ID, command string) (changed bool, err error)
 	HasGrant(ctx context.Context, userID snowflake.ID, command string) (bool, error)
 
+	// Open commands: anyone may run command in guildID, or anywhere when
+	// guildID is Public.
+	OpenCommand(ctx context.Context, guildID snowflake.ID, command string, e Entry) (changed bool, err error)
+	CloseCommand(ctx context.Context, guildID snowflake.ID, command string) (changed bool, err error)
+	// CommandOpen reports whether command is open in exactly guildID (Public
+	// is checked on its own).
+	CommandOpen(ctx context.Context, guildID snowflake.ID, command string) (bool, error)
+
 	// Snapshot returns everything, sorted as Snapshot.Sort does.
 	Snapshot(ctx context.Context) (Snapshot, error)
 }
@@ -54,17 +62,34 @@ type GrantEntry struct {
 	Entry
 }
 
+// Public, as an open command's guild, means every server, allowed or not.
+// Discord never uses 0 as an ID.
+const Public snowflake.ID = 0
+
+// OpenEntry is one command opened to everyone in a guild, or everywhere when
+// GuildID is Public.
+type OpenEntry struct {
+	GuildID snowflake.ID
+	Command string
+	Entry
+}
+
 // Snapshot is a sorted, read-only copy of the allow-lists.
 type Snapshot struct {
 	Guilds []GuildEntry
 	Grants []GrantEntry
+	Open   []OpenEntry
 }
 
 // Sort puts a snapshot in the order Backend.Snapshot promises: guilds by ID,
-// grants by user ID then command.
+// grants by user ID then command, open commands by guild ID (Public first)
+// then command.
 func (s *Snapshot) Sort() {
 	slices.SortFunc(s.Guilds, func(a, b GuildEntry) int { return cmp.Compare(a.GuildID, b.GuildID) })
 	slices.SortFunc(s.Grants, func(a, b GrantEntry) int {
 		return cmp.Or(cmp.Compare(a.UserID, b.UserID), cmp.Compare(a.Command, b.Command))
+	})
+	slices.SortFunc(s.Open, func(a, b OpenEntry) int {
+		return cmp.Or(cmp.Compare(a.GuildID, b.GuildID), cmp.Compare(a.Command, b.Command))
 	})
 }

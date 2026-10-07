@@ -36,7 +36,9 @@ test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 # "openai", both through their Responses API with the key in .env as
 # LLM_API_KEY; or "echo", a free stand-in that repeats the question, for trying
 # the command out. Grant it separately (allow @user ask); it then works in any
-# channel of an allowed server, capped by the limits below. A reply to one of
+# channel of an allowed server, capped by the limits below. "allow everyone ask"
+# or "allow public ask" let anyone ask, each with their own daily allowance, all
+# on your API key. A reply to one of
 # its answers (with the reply's @ on) continues the conversation. Questions, the
 # channel's recent ask conversation and any image go to the provider.
 # llm_provider: xai
@@ -118,8 +120,9 @@ llm_weight_search: 8
 llm_weight_image: 4
 
 # Reminders: "remindme <when> <what>" pings that person in the channel where
-# they set it (its own grant: allow @user remindme). Times like "at 18:30" are
-# in this timezone; unset, it's llm_daily_reset_timezone's. Up to 10 reminders
+# they set it (its own grant: allow @user remindme, or allow everyone
+# remindme). Times like "at 18:30" are in this timezone; unset, it's
+# llm_daily_reset_timezone's. Up to 10 reminders
 # per person, repeats at least an hour apart; they're saved in the database.
 # For people who also have ask and allowance left, the model words the
 # reminder (costing 1, like a plain answer); otherwise it's their own text.

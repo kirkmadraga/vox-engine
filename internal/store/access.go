@@ -48,6 +48,21 @@ func (a Access) HasGrant(ctx context.Context, userID snowflake.ID, command strin
 	return a.exists(ctx, `SELECT 1 FROM grants WHERE user_id = ? AND command = ?`, int64(userID), command)
 }
 
+func (a Access) OpenCommand(ctx context.Context, guildID snowflake.ID, command string, e access.Entry) (bool, error) {
+	return changed(a.db.sql.ExecContext(ctx,
+		`INSERT INTO open_commands (guild_id, command, added_by, added_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (guild_id, command) DO NOTHING`,
+		int64(guildID), command, int64(e.AddedBy), formatTime(e.AddedAt)))
+}
+
+func (a Access) CloseCommand(ctx context.Context, guildID snowflake.ID, command string) (bool, error) {
+	return changed(a.db.sql.ExecContext(ctx, `DELETE FROM open_commands WHERE guild_id = ? AND command = ?`, int64(guildID), command))
+}
+
+func (a Access) CommandOpen(ctx context.Context, guildID snowflake.ID, command string) (bool, error) {
+	return a.exists(ctx, `SELECT 1 FROM open_commands WHERE guild_id = ? AND command = ?`, int64(guildID), command)
+}
+
 func (a Access) exists(ctx context.Context, query string, args ...any) (bool, error) {
 	var one int
 	err := a.db.sql.QueryRowContext(ctx, query, args...).Scan(&one)
@@ -89,6 +104,13 @@ func (a Access) Snapshot(ctx context.Context) (access.Snapshot, error) {
 	err = a.idCommandRows(ctx, "grants", `SELECT user_id, command, added_by, added_at FROM grants`,
 		func(id snowflake.ID, cmd string, e access.Entry) {
 			snap.Grants = append(snap.Grants, access.GrantEntry{UserID: id, Command: cmd, Entry: e})
+		})
+	if err != nil {
+		return snap, err
+	}
+	err = a.idCommandRows(ctx, "open_commands", `SELECT guild_id, command, added_by, added_at FROM open_commands`,
+		func(id snowflake.ID, cmd string, e access.Entry) {
+			snap.Open = append(snap.Open, access.OpenEntry{GuildID: id, Command: cmd, Entry: e})
 		})
 	if err != nil {
 		return snap, err

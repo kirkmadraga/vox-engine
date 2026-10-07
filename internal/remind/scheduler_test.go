@@ -80,21 +80,7 @@ func (m *memStore) DeleteReminder(_ context.Context, id int64) (bool, error) {
 	return len(m.rs) < n, nil
 }
 
-func (m *memStore) deleteWhere(f func(Reminder) bool) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n := len(m.rs)
-	m.rs = slices.DeleteFunc(m.rs, f)
-	return n - len(m.rs)
-}
-
-func (m *memStore) DeleteUserReminders(_ context.Context, user snowflake.ID) (int, error) {
-	return m.deleteWhere(func(r Reminder) bool { return r.UserID == user }), nil
-}
-
-func (m *memStore) DeleteGuildReminders(_ context.Context, guild snowflake.ID, keep []snowflake.ID) (int, error) {
-	return m.deleteWhere(func(r Reminder) bool { return r.GuildID == guild && !slices.Contains(keep, r.UserID) }), nil
-}
+func (m *memStore) AllReminders(context.Context) ([]Reminder, error) { return m.all(), nil }
 
 func (m *memStore) ReminderCounts(context.Context) (int, int, error) {
 	m.mu.Lock()

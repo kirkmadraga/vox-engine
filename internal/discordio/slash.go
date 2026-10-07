@@ -25,7 +25,7 @@ import (
 var guildOnly = []discord.InteractionContextType{discord.InteractionContextTypeGuild}
 
 // SlashCommands defines every command for Discord. grantable lists the commands
-// offered by "/allow user" and "/deny user"; ask adds /ask (when an LLM is set
+// offered by "/allow user|everyone|public" and "/deny" alike; ask adds /ask (when an LLM is set
 // up), and askSearch its "search" switch (when search is on request).
 func SlashCommands(grantable []string, ask, askSearch bool) []discord.ApplicationCommandCreate {
 	simple := func(name, desc string) discord.ApplicationCommandCreate {
@@ -52,10 +52,24 @@ func SlashCommands(grantable []string, ask, askSearch bool) []discord.Applicatio
 					discord.ApplicationCommandOptionString{Name: "command", Description: "Which command (default: play)", Choices: choices},
 				},
 			},
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "everyone",
+				Description: verb + " a command for everyone in this server",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionString{Name: "command", Description: "Which command (default: play)", Choices: choices},
+				},
+			},
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "public",
+				Description: verb + " a command for everyone, in every server (allowed or not)",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionString{Name: "command", Description: "Which command (default: play)", Choices: choices},
+				},
+			},
 		}
 		return discord.SlashCommandCreate{
 			Name:        name,
-			Description: verb + " a server, or a command for a user (owners only)",
+			Description: verb + " a server, or a command for a user, this server or everyone (owners only)",
 			Contexts:    guildOnly,
 			Options:     subs,
 		}
@@ -166,6 +180,8 @@ func slashArgs(data discord.SlashCommandInteractionData) (args string, ok bool) 
 				return "", false
 			}
 			return strings.TrimSpace(commands.Mention(user) + " " + opt("command")), true
+		case "everyone", "public":
+			return strings.TrimSpace(*data.SubCommandName + " " + opt("command")), true
 		}
 	}
 	return "", false

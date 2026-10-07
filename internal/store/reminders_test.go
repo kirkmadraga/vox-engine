@@ -60,23 +60,16 @@ func TestReminders(t *testing.T) {
 	if ok, _ := db.DeleteReminder(ctx, other); ok {
 		t.Error("deleting twice reported a change")
 	}
-	add(9, 100, time.Hour, remind.Rule{})
-	add(7, 100, time.Hour, remind.Rule{}) // an owner's
-	if n, err := db.DeleteGuildReminders(ctx, 100, []snowflake.ID{7, 1}); n != 3 || err != nil {
-		t.Errorf("delete guild 100: %d %v", n, err)
+	third := add(9, 100, 30*time.Minute, remind.Rule{})
+	all, err := db.AllReminders(ctx)
+	if err != nil || len(all) != 3 || all[0].ID != third || all[1].ID != late || all[2].ID != soon {
+		t.Fatalf("all, soonest first: %+v, %v", all, err)
 	}
-	if owner, _ := db.UserReminders(ctx, 7); len(owner) != 1 {
-		t.Errorf("the owner's reminder must be kept: %+v", owner)
+	for _, id := range []int64{third, late, soon} {
+		db.DeleteReminder(ctx, id)
 	}
-	if n, _ := db.DeleteUserReminders(ctx, 7); n != 1 {
-		t.Errorf("delete user 7: %d", n)
-	}
-	add(9, 200, time.Hour, remind.Rule{})
-	if n, err := db.DeleteUserReminders(ctx, 9); n != 1 || err != nil {
-		t.Errorf("delete user 9: %d %v", n, err)
-	}
-	if total, _, _ := db.ReminderCounts(ctx); total != 0 {
-		t.Errorf("left: %d", total)
+	if all, err := db.AllReminders(ctx); len(all) != 0 || err != nil {
+		t.Errorf("left: %+v %v", all, err)
 	}
 }
 

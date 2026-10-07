@@ -38,10 +38,14 @@ Use a slash command (`/play`) or mention the bot (`@Bot play`); both work the sa
 | `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant) |
 | `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |
-| `allow` / `deny @user [command]` | Grant or revoke a command (default `play`); revoking `remindme` deletes that person's reminders, and `deny guild` the ones set there | Owners |
+| `allow` / `deny @user [command]` | Grant or revoke a command for one person (default `play`) | Owners |
+| `allow` / `deny everyone [command]` | Open a command to everyone in this server, or close it | Owners |
+| `allow` / `deny public [command]` | Open a command to everyone in every server the bot is in, allowed or not, or close it | Owners |
 
-Owners (from `config.yaml`) can use everything, everywhere. The bot stays silent
-to anyone not allowed.
+Owners (from `config.yaml`) can use everything, everywhere. Everyone else gets a
+command if it's public, or, in an allowed server, if it's open to everyone there
+or granted to them. The bot stays silent to anyone not allowed. Taking
+`remindme` away deletes the reminders that went with it.
 
 ## Running it
 
@@ -81,7 +85,8 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
    `3148800` (View Channel, Send Messages, Connect, Speak):
    `https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot+applications.commands&permissions=3148800`.
    No privileged intents are needed (unless you opt into the one below). The bot registers its
-   slash commands itself at startup.
+   slash commands itself at startup. On the **Bot** page, also turn off **Public Bot**, so only
+   you can add the bot to servers.
 2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 3. Copy `config.example.yaml` to `config.yaml`, then:
    - put your Discord user ID in `owner_user_ids` (the bot refuses to start
@@ -94,7 +99,7 @@ and Linux builds into `dist/`. `scripts/make-tone.sh` regenerates the test tone.
    are ignored. `./vox-engine -check-config` only checks `.env` and `config.yaml`
    and exits (status 1 on errors), e.g. before restarting after an edit.
 5. In Discord: `@Bot allow guild`, then `@Bot allow @friend` for anyone who
-   should be able to play music.
+   should be able to play music (or `@Bot allow everyone` for the whole server).
 
 It writes `cache/` (audio) and `data/bot.db` (access lists, cache index), and
 needs `assets/tone.opus` for `test`. How you keep it running (systemd, a

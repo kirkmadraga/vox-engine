@@ -134,14 +134,14 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	}
 	inherit[commands.ForgetCommand] = commands.AskCommand // whoever may ask may make it forget
 	policy := access.NewPolicy(db.Access(), access.Options{
-		Owners:    cfg.OwnerIDs,
-		Public:    []string{"ping"},
-		OwnerOnly: commands.ManagementCommands,
-		Inherit:   inherit,
-		Logger:    logger,
+		Owners:     cfg.OwnerIDs,
+		AlwaysOpen: []string{"ping"},
+		OwnerOnly:  commands.ManagementCommands,
+		Inherit:    inherit,
+		Logger:     logger,
 	})
 	if snap, err := policy.Snapshot(ctx); err == nil {
-		logger.Info("database opened", "file", cfg.Database, "guilds", len(snap.Guilds), "grants", len(snap.Grants))
+		logger.Info("database opened", "file", cfg.Database, "guilds", len(snap.Guilds), "grants", len(snap.Grants), "open", len(snap.Open))
 	}
 
 	// Downloads: yt-dlp (plus ffmpeg, which yt-dlp calls) into the audio cache.
@@ -277,8 +277,9 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		commands.Skip{Queue: q},
 		commands.Stop{Queue: q},
 		commands.Allow{Access: policy, Known: known},
-		// Taking away remindme, or a server, deletes the reminders that went with it.
-		commands.Deny{Access: policy, Reminders: db, Owners: cfg.OwnerIDs},
+		// Taking away remindme (from a person, a server or everyone) deletes the
+		// reminders that lost their access with it.
+		commands.Deny{Access: policy, Reminders: db},
 		commands.RemindMe{Store: db, Location: cfg.ReminderLocation, Wake: scheduler.Wake, Logger: logger},
 	}
 	// Owner-only status ("debug …"), mentions only: not a slash command.

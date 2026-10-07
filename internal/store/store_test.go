@@ -146,6 +146,46 @@ func TestUpgradeFromSchema1KeepsAccessLists(t *testing.T) {
 	}
 }
 
+// A v1.1.x database (schema 4) upgrades in place: access lists, reminders and
+// balances survive, and open commands work.
+func TestUpgradeFromSchema4AddsOpenCommands(t *testing.T) {
+	path := tempDB(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range append(append([]string{}, migrations[:4]...),
+		`PRAGMA user_version = 4`,
+		`INSERT INTO allowed_guilds (guild_id, added_by, added_at) VALUES (100, 7, '2026-09-29T05:00:00Z')`,
+		`INSERT INTO grants (user_id, command, added_by, added_at) VALUES (8, 'play', 7, '2026-09-29T05:00:00Z')`,
+		`INSERT INTO ask_balances (user_id, day, balance) VALUES (8, '2026-10-07', 4)`,
+		`INSERT INTO reminders (user_id, guild_id, channel_id, text, next_at, created_at) VALUES (8, 100, 5, 'stretch', 1791379641, '2026-10-07T05:00:00Z')`) {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	raw.Close()
+
+	db := openAt(t, path)
+	ctx := context.Background()
+	if _, err := db.Access().OpenCommand(ctx, 100, "play", access.Entry{AddedBy: 7}); err != nil {
+		t.Fatalf("open after upgrade: %v", err)
+	}
+	snap, err := db.Access().Snapshot(ctx)
+	if err != nil || len(snap.Guilds) != 1 || len(snap.Grants) != 1 || len(snap.Open) != 1 {
+		t.Errorf("access lists after upgrade: %+v, %v", snap, err)
+	}
+	if rs, err := db.AllReminders(ctx); len(rs) != 1 || rs[0].Text != "stretch" || err != nil {
+		t.Errorf("reminders after upgrade: %+v, %v", rs, err)
+	}
+	if _, b, found, err := db.DailyBalance(ctx, 8); !found || b != 4 || err != nil {
+		t.Errorf("balance after upgrade: %d %v %v", b, found, err)
+	}
+}
+
 // A v1.0.0 database with ask channels saved opens and works the same: the
 // channel list is ignored, not deleted (an older build would still find it).
 func TestSavedAskChannelsAreKeptButIgnored(t *testing.T) {

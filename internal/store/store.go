@@ -72,6 +72,15 @@ var migrations = []string{
 	);
 	CREATE INDEX reminders_next ON reminders (next_at);
 	CREATE INDEX reminders_user ON reminders (user_id);`,
+	// 5: commands opened to everyone in a guild ("allow everyone"), or in
+	// every guild when guild_id is 0 ("allow public").
+	`CREATE TABLE open_commands (
+		guild_id INTEGER NOT NULL,
+		command  TEXT    NOT NULL,
+		added_by INTEGER NOT NULL,
+		added_at TEXT    NOT NULL,
+		PRIMARY KEY (guild_id, command)
+	);`,
 }
 
 // SchemaVersion is the version this build writes.

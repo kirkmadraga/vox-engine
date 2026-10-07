@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -295,34 +296,128 @@ func TestFirerGoneAndRetries(t *testing.T) {
 	}
 }
 
-// Taking away remindme, or denying a server, deletes the reminders that went with it.
-func TestDenyDeletesReminders(t *testing.T) {
+// Whenever remindme is taken away (from a person, a server, everyone in a
+// server, or the public), exactly the reminders that lost their access are
+// deleted: the ones still reachable some other way, and owners', stay.
+func TestDenyDeletesRemindersThatLostAccess(t *testing.T) {
 	e := newEnv(accesstest.NewMemory())
 	store := &remindtest.Memory{}
-	deny := Deny{Access: e.policy, Reminders: store, Owners: []snowflake.ID{ownerID}}
+	deny := Deny{Access: e.policy, Reminders: store}
+	allow := Allow{Access: e.policy, Known: func(string) bool { return true }}
+	const other snowflake.ID = 200 // a server that isn't allowed
+	type key struct{ user, guild snowflake.ID }
 	add := func(user, guild snowflake.ID) {
 		store.AddReminder(context.Background(), remind.Reminder{UserID: user, GuildID: guild, Text: "x", Next: remindNow})
+	}
+	left := func(stage string, want ...key) {
+		t.Helper()
+		var got []key
+		for _, r := range store.All() {
+			got = append(got, key{r.UserID, r.GuildID})
+		}
+		slices.SortFunc(got, func(a, b key) int { return cmp.Or(cmp.Compare(a.user, b.user), cmp.Compare(a.guild, b.guild)) })
+		slices.SortFunc(want, func(a, b key) int { return cmp.Or(cmp.Compare(a.user, b.user), cmp.Compare(a.guild, b.guild)) })
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: left %v, want %v", stage, got, want)
+		}
+	}
+	reply := func(cmd Command, args, wantSuffix string) {
+		t.Helper()
+		if got := run(t, cmd, args); !strings.HasSuffix(got.Content, wantSuffix) {
+			t.Errorf("%s %s: %q, want it to end with %q", cmd.Name(), args, got.Content, wantSuffix)
+		}
+	}
+	noNote := func(cmd Command, args string) {
+		t.Helper()
+		if got := run(t, cmd, args); strings.Contains(got.Content, "reminder") {
+			t.Errorf("%s %s: %q, want no reminder note", cmd.Name(), args, got.Content)
+		}
 	}
 	ctx := context.Background()
 	e.policy.AllowGuild(ctx, guildID, ownerID)
 	e.policy.Grant(ctx, 8, RemindCommand, ownerID)
 	e.policy.Grant(ctx, 8, "play", ownerID)
 	add(8, guildID)
-	add(8, 200)
-	add(9, guildID)
+	add(8, other)
+	add(9, guildID) // no access at all: set while remindme was open, say
 	add(ownerID, guildID)
+	add(ownerID, other)
 
-	if got := run(t, deny, "<@8> play"); strings.Contains(got.Content, "reminder") || len(store.All()) != 4 {
-		t.Errorf("another grant: %q, left %d", got.Content, len(store.All()))
-	}
-	if got := run(t, deny, "<@8> remindme"); !strings.HasSuffix(got.Content, "Their 2 reminders were deleted.") {
-		t.Errorf("revoke remindme: %q", got.Content)
-	}
+	// Another command: nothing is checked or deleted, even 9's stale one.
+	noNote(deny, "<@8> play")
+	left("deny play", key{8, guildID}, key{8, other}, key{9, guildID}, key{ownerID, guildID}, key{ownerID, other})
+
+	// remindme open to everyone here: 8 keeps this server's, loses the other's.
+	allow.Run(ctx, Request{GuildID: guildID, AuthorID: ownerID, Args: "everyone remindme", Reply: &fakeReplier{}})
+	reply(deny, "<@8> remindme", "can no longer use `remindme`.\n1 reminder that went with it was deleted.")
+	left("revoke 8", key{8, guildID}, key{9, guildID}, key{ownerID, guildID}, key{ownerID, other})
+
+	// Public: denying the server deletes nothing, since public still reaches it.
+	run(t, allow, "public remindme")
+	reply(deny, "guild", "Only owners and public commands work there now.\nIts open command (`remindme`) comes back if you allow it again.")
+	left("deny guild while public", key{8, guildID}, key{9, guildID}, key{ownerID, guildID}, key{ownerID, other})
+
+	// Closing public with the server denied: everyone's here goes, owners' stay.
+	reply(deny, "public remindme", "is no longer open to everyone, in every server I'm in.\n2 reminders that went with it were deleted.")
+	left("deny public", key{ownerID, guildID}, key{ownerID, other})
+
+	// Closing everyone in an allowed server: only those without a grant go.
+	run(t, allow, "guild")
+	e.policy.Grant(ctx, 8, RemindCommand, ownerID)
 	add(8, guildID)
-	if got := run(t, deny, "guild"); !strings.HasSuffix(got.Content, "Its 2 reminders were deleted.") {
-		t.Errorf("deny guild: %q", got.Content)
+	add(9, guildID)
+	reply(deny, "everyone remindme", "is no longer open to everyone in this server.\n1 reminder that went with it was deleted.")
+	left("deny everyone", key{8, guildID}, key{ownerID, guildID}, key{ownerID, other})
+
+	// Denying the server now takes 8's too.
+	reply(deny, "guild", "\n1 reminder that went with it was deleted.")
+	left("deny guild", key{ownerID, guildID}, key{ownerID, other})
+
+	// Closing something else, or nothing at all, checks nothing.
+	run(t, allow, "everyone play")
+	add(9, guildID)
+	noNote(deny, "everyone play")
+	reply(deny, "everyone remindme", "wasn't open to everyone in this server.")
+	left("no-ops", key{9, guildID}, key{ownerID, guildID}, key{ownerID, other})
+}
+
+// A storage error while checking must never read as "no access": nothing is
+// deleted, and the reply says the check didn't finish.
+func TestDenyKeepsRemindersWhenTheCheckFails(t *testing.T) {
+	backend := &flakyOpen{Memory: accesstest.NewMemory()}
+	e := newEnv(backend)
+	store := &remindtest.Memory{}
+	deny := Deny{Access: e.policy, Reminders: store}
+	ctx := context.Background()
+	e.policy.Grant(ctx, 8, RemindCommand, ownerID)
+	store.AddReminder(ctx, remind.Reminder{UserID: 8, GuildID: guildID, Text: "x", Next: remindNow})
+	store.AddReminder(ctx, remind.Reminder{UserID: 9, GuildID: guildID, Text: "x", Next: remindNow})
+
+	backend.fail = true
+	if got := run(t, deny, "<@8> remindme"); !strings.HasSuffix(got.Content, "Couldn't check all the reminders that went with it; any left will be dropped when due.") {
+		t.Errorf("access check failing: %q", got.Content)
 	}
-	if rs := store.All(); len(rs) != 1 || rs[0].UserID != ownerID {
-		t.Errorf("left %+v; want only the owner's", rs)
+	if n := len(store.All()); n != 2 {
+		t.Errorf("deleted %d reminders on a failed check", 2-n)
 	}
+
+	backend.fail = false
+	e.policy.Grant(ctx, 8, RemindCommand, ownerID)
+	store.Fail = errors.New("disk gone")
+	if got := run(t, deny, "<@8> remindme"); !strings.Contains(got.Content, "Couldn't check all the reminders") {
+		t.Errorf("reminder store failing: %q", got.Content)
+	}
+}
+
+// flakyOpen fails the open-commands lookup on demand.
+type flakyOpen struct {
+	*accesstest.Memory
+	fail bool
+}
+
+func (f *flakyOpen) CommandOpen(ctx context.Context, guild snowflake.ID, command string) (bool, error) {
+	if f.fail {
+		return false, errors.New("storage down")
+	}
+	return f.Memory.CommandOpen(ctx, guild, command)
 }

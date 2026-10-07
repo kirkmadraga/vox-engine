@@ -31,10 +31,9 @@ type Store interface {
 	SoonestReminder(ctx context.Context) (r Reminder, ok bool, err error)
 	RescheduleReminder(ctx context.Context, id int64, next time.Time) error
 	DeleteReminder(ctx context.Context, id int64) (deleted bool, err error)
-	DeleteUserReminders(ctx context.Context, user snowflake.ID) (n int, err error)
-	// DeleteGuildReminders deletes the reminders set in guild, except keep's
-	// (owners, who keep their access in a denied server).
-	DeleteGuildReminders(ctx context.Context, guild snowflake.ID, keep []snowflake.ID) (n int, err error)
+	// AllReminders returns every reminder, soonest first (to recheck access
+	// after it's taken away).
+	AllReminders(ctx context.Context) ([]Reminder, error)
 	// ReminderCounts counts all reminders, and how many repeat.
 	ReminderCounts(ctx context.Context) (total, repeating int, err error)
 }

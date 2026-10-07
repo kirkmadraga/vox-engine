@@ -29,9 +29,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The latest Go, for its security fixes: go.mod's version is only the
+      # oldest one supported (CI tests that one).
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Build and package
         env:
