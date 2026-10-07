@@ -1,32 +1,42 @@
+<div align="center">
+
 # vox-engine
 
-A small, self-hosted Discord music bot in Go. It plays YouTube and Spotify links
-in voice channels, with end-to-end voice encryption (DAVE), and is built to run on weak
-hardware: one pure-Go binary, no cgo, Opus passed straight through with no
-re-encoding.
+**A vibe-coded multi-tool Discord bot you self-host on low-end hardware.**
+
+[![Latest version](https://img.shields.io/github/v/tag/kirkmadraga/vox-engine?sort=semver&label=version)](https://github.com/kirkmadraga/vox-engine/tags) [![Go](https://img.shields.io/github/go-mod/go-version/kirkmadraga/vox-engine)](go.mod) [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+</div>
+
+## ✨ Features
+
+- 🎵 **Music.** Play YouTube and Spotify links in voice, or search YouTube and
+  pick a result. Queue, skip, stop.
+- ⏰ **Reminders.** One-off or repeating, pinging you in the channel where you set
+  them.
+- 🤖 **Ask.** Chat with a language model (xAI's Grok or OpenAI). It remembers the
+  channel's recent conversation, looks at images, and searches the web when
+  asked.
+- 🔐 **Owner-controlled access.** The bot's owner decides which servers and people
+  can use what, with daily limits on `ask`.
+- ⚡ **Slash commands and mentions.** `/play` and `@Bot play` work the same way.
 
 ## Commands
 
-Use a slash command (`/play`, `/queue`, …) or mention the bot, then the command: `@Bot play <link>`,
-or `@Bot play <search words>` to list the top YouTube results and then `@Bot play <number>` to pick
-one. Both work the same way and follow the same access rules; `/allow` and `/deny` take a `guild` or
-`user` subcommand. `/play` also has an optional `lucky` switch: with search words, it plays the first
-result that isn't a cover, karaoke or live version (unless you asked for one) instead of listing them. Someone without access who uses a slash command gets a short reply only they can
-see (`unauthorized_message` in `config.yaml`); a mention from them gets no reply.
+Use a slash command (`/play`) or mention the bot (`@Bot play`); both work the same.
 
 | Command | What it does | Who |
 |---|---|---|
 | `ping` | Replies "@you pong" | Anyone, in allowed servers |
-| `play <YouTube link>` | Adds the track to this server's queue and joins your voice channel | Granted users |
-| `play <Spotify track link>` | Same, for a single Spotify track (albums and playlists aren't supported yet) | Granted users |
+| `play <YouTube or Spotify link>` | Adds the track to this server's queue and joins your voice channel (Spotify: single tracks only, for now) | Granted users |
 | `play <search words>` | Lists the top YouTube results (10 by default, `search_results` in `config.yaml`) | Granted users |
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
-| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant) |
-| `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
 | `remindme <when> <what>` | Pings you in this channel at that time, e.g. `in 2h`, `at 18:30`, `on friday`, `every day at 08:00` (`remindme` alone lists the formats). With `ask` and allowance left, the model words it | Granted users (its own grant) |
 | `remindme list` / `cancel <number>` | Your reminders in this server; remove one | Same as `remindme` |
+| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant) |
+| `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |
 | `allow` / `deny @user [command]` | Grant or revoke a command (default `play`); revoking `remindme` deletes that person's reminders, and `deny guild` the ones set there | Owners |
 
