@@ -107,7 +107,16 @@ func TestDebugLLM(t *testing.T) {
 		"`xai` · `grok-4.3`", "Search: on-request (images on) · tool turns 1 · max tokens 500 · reasoning low",
 		"Last answer: 2m 0s ago (took 3.1s) · last error 41m 0s ago: xai: HTTP 429: slow down",
 		"Since start (3h 12m): 41 answers · 2 errors · 7 searched · 3 viewed images",
-		"Tokens: in 68,210 (cached 4,100) · out 9,870 (thinking 7,950)", "Tool calls: web_search_calls 18")
+		"Tokens: in 68,210 (cached 4,100) · out 9,870 (thinking 7,950)", "Tool calls: web_search_calls 18",
+		"\nReminders: worded by the same model")
+
+	d.RemindLLM = fakeReporter{st: llm.Status{Name: "xai", Model: "grok-4.3-mini", ReasoningEffort: "none",
+		Stats: llm.Stats{Answers: 12, Errors: 1, InputTokens: 3400, OutputTokens: 560}}}
+	out := runDebug(t, d, "llm")
+	has(t, "reminder model", out, "\nReminders: `grok-4.3-mini` · reasoning none · 12 worded · 1 errors · tokens in 3,400 · out 560 (thinking 0)")
+	if strings.Contains(out, "same model") {
+		t.Errorf("a reminder model set, but debug says the same: %s", out)
+	}
 }
 
 type fakeReporter struct{ st llm.Status }
@@ -185,7 +194,7 @@ func TestDebugRemind(t *testing.T) {
 		FireStats: func() FireStats { return FireStats{Worded: 3, Plain: 2} }}
 	out := runDebug(t, d, "remind")
 	has(t, "remind", out, "**remind**: 2 saved (1 repeat) · times in UTC", fmt.Sprintf("Next due <t:%d:R>", debugNow.Add(time.Hour).Unix()),
-		"Since start (1h 0m): 5 sent (1 late) · 2 skipped as too late · 1 gone (deleted) · 0 failed", "Worded by the model 3 · own text 2")
+		"Since start (1h 0m): 5 sent (1 late) · 2 skipped (too late, or missed past their end) · 1 gone (deleted) · 0 failed", "Worded by the model 3 · own text 2")
 	if strings.Contains(out, "secret") || strings.Contains(out, "<@8>") {
 		t.Errorf("debug remind shows content or people:\n%s", out)
 	}

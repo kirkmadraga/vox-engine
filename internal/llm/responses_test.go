@@ -91,6 +91,18 @@ func TestResponsesSendsTheRightRequest(t *testing.T) {
 	}
 }
 
+// "none" (no thinking, on models that allow it) is sent as is, not dropped
+// like an unset effort.
+func TestResponsesSendsReasoningNone(t *testing.T) {
+	f := &fakeProvider{status: 200, body: okBody("ok", `{}`)}
+	c := client(f.serve(t).URL)
+	c.ReasoningEffort = "none"
+	c.Complete(context.Background(), Request{Conversation: conv[:1]})
+	if got := mustJSON(f.got["reasoning"]); got != `{"effort":"none"}` {
+		t.Errorf("reasoning = %s", got)
+	}
+}
+
 func TestResponsesOmitsWhatIsOff(t *testing.T) {
 	f := &fakeProvider{status: 200, body: okBody("ok", `{}`)}
 	c := client(f.serve(t).URL)

@@ -81,6 +81,8 @@ var migrations = []string{
 		added_at TEXT    NOT NULL,
 		PRIMARY KEY (guild_id, command)
 	);`,
+	// 6: a repeating reminder's end ("until", "for"), Unix seconds; 0 = none.
+	`ALTER TABLE reminders ADD COLUMN until_at INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // SchemaVersion is the version this build writes.

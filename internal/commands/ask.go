@@ -43,6 +43,7 @@ const AskCommand = "ask"
 // slash commands.
 type Ask struct {
 	LLM            llm.Provider
+	RemindLLM      llm.Provider // words reminders (e.g. a model without thinking); nil = LLM
 	Logger         *slog.Logger
 	Cooldown       time.Duration // 0 = none
 	MaxConcurrent  int           // 0 = no limit
@@ -379,7 +380,11 @@ func (c *Ask) Remind(ctx context.Context, user snowflake.ID, name, text string) 
 	prompt := fmt.Sprintf("[reminder] It's time for a reminder %s set for themselves: %q. "+
 		"Write the message that reminds them: one or two short, friendly sentences in the reminder's language. "+
 		"Don't ask anything back.", name, text)
-	answer, err := c.LLM.Complete(wctx, llm.Request{Conversation: []llm.Message{{Role: llm.User, Name: name, Content: prompt}}})
+	model := c.LLM
+	if c.RemindLLM != nil {
+		model = c.RemindLLM
+	}
+	answer, err := model.Complete(wctx, llm.Request{Conversation: []llm.Message{{Role: llm.User, Name: name, Content: prompt}}})
 	c.release()
 	if err != nil {
 		return "", err

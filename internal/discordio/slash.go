@@ -101,7 +101,7 @@ func SlashCommands(grantable []string, ask, askSearch bool) []discord.Applicatio
 					Description: "Set a reminder",
 					Options: []discord.ApplicationCommandOption{
 						discord.ApplicationCommandOptionString{Name: "when", Required: true, MaxLength: new(60),
-							Description: "e.g. in 2h, at 18:30, tomorrow at 9am, on friday, every day at 08:00"},
+							Description: "e.g. in 2h, at 18:30, tomorrow at 9am, on friday, every day at 08:00, every 2h until 18:00"},
 						discord.ApplicationCommandOptionString{Name: "text", Description: "What to remind you about", Required: true,
 							MaxLength: new(commands.DefaultReminderChars)},
 					},

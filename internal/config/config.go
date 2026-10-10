@@ -80,6 +80,8 @@ func parseLLMBridge(cfg *Config, f file, getenv func(string) string) error {
 	cfg.LLMWebSearchImages = f.LLMWebSearchImages
 	cfg.LLMModel = strings.TrimSpace(f.LLMModel)
 	cfg.LLMReasoningEffort = strings.ToLower(strings.TrimSpace(f.LLMReasoningEffort))
+	cfg.LLMReminderModel = strings.TrimSpace(f.LLMReminderModel)
+	cfg.LLMReminderReasoningEffort = strings.ToLower(strings.TrimSpace(f.LLMReminderEffort))
 	if f.LLMMaxTokens != nil {
 		if *f.LLMMaxTokens < 1 {
 			return fmt.Errorf("llm_max_tokens must be at least 1, got %d", *f.LLMMaxTokens)
@@ -92,10 +94,15 @@ func parseLLMBridge(cfg *Config, f file, getenv func(string) string) error {
 		}
 		cfg.LLMMaxToolTurns = *f.LLMMaxToolTurns
 	}
-	switch cfg.LLMReasoningEffort {
-	case "", "low", "medium", "high":
-	default:
-		return fmt.Errorf("llm_reasoning_effort must be empty, low, medium or high, got %q", f.LLMReasoningEffort)
+	for _, e := range []struct{ name, value, raw string }{
+		{"llm_reasoning_effort", cfg.LLMReasoningEffort, f.LLMReasoningEffort},
+		{"llm_reminder_reasoning_effort", cfg.LLMReminderReasoningEffort, f.LLMReminderEffort},
+	} {
+		switch e.value {
+		case "", "none", "low", "medium", "high":
+		default:
+			return fmt.Errorf("%s must be empty, none, low, medium or high, got %q", e.name, e.raw)
+		}
 	}
 	p := cfg.LLMProvider
 	if p == "" {
@@ -180,6 +187,10 @@ type Config struct {
 	LLMWebSearch       string // "off", "on-request" (the asker says "search") or "always" (the model decides)
 	LLMWebSearchImages bool   // let search look at images it finds (xAI)
 	LLMMaxToolTurns    int    // rounds of tool use per question; 0 = no cap
+	// Wording reminders: its own model and reasoning effort, e.g. one that
+	// doesn't think first. LLMReminderModel "" = LLMModel and its effort.
+	LLMReminderModel           string
+	LLMReminderReasoningEffort string // "" = the model's default; "none" = no thinking, where supported
 }
 
 // file mirrors config.yaml. IDs stay strings here and are parsed to snowflakes after decoding.
@@ -225,6 +236,8 @@ type file struct {
 	LLMWebSearch          string   `yaml:"llm_web_search"`
 	LLMWebSearchImages    bool     `yaml:"llm_web_search_images"`
 	LLMMaxToolTurns       *int     `yaml:"llm_max_tool_turns"`
+	LLMReminderModel      string   `yaml:"llm_reminder_model"`
+	LLMReminderEffort     string   `yaml:"llm_reminder_reasoning_effort"`
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from path into the process environment.

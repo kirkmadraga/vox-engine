@@ -23,15 +23,17 @@ const DebugCommand = "debug"
 // Debug is "@Bot debug [subcommand]": read-only status for the bot's owner.
 // Numbers, names and states only; never questions, answers or other content.
 type Debug struct {
-	Access  AccessManager
-	LLM     llm.Provider // nil when ask is off
-	Ask     *Ask         // nil when ask is off
-	Queue   func() queue.Status
-	Cache   func(context.Context) (cache.Status, error)
-	Search  func() ytdlp.SearchStatus
-	Recent  *ytdlp.Recent
-	Started time.Time
-	Now     func() time.Time // nil = time.Now
+	Access AccessManager
+	LLM    llm.Provider // nil when ask is off
+	// RemindLLM words reminders when it's set apart from LLM; nil = LLM does.
+	RemindLLM llm.Provider
+	Ask       *Ask // nil when ask is off
+	Queue     func() queue.Status
+	Cache     func(context.Context) (cache.Status, error)
+	Search    func() ytdlp.SearchStatus
+	Recent    *ytdlp.Recent
+	Started   time.Time
+	Now       func() time.Time // nil = time.Now
 	// Version describes this build (version.Info's text); YtdlpVersion gives
 	// yt-dlp's, which can change while the bot runs (use a ytdlp.VersionCache:
 	// starting yt-dlp is slow). Both optional.
@@ -103,7 +105,7 @@ func (c Debug) remind(ctx context.Context) string {
 		if !st.NextDue.IsZero() {
 			fmt.Fprintf(&b, "\nNext due <t:%d:R>", st.NextDue.Unix())
 		}
-		fmt.Fprintf(&b, "\nSince start (%s): %d sent (%d late) · %d skipped as too late · %d gone (deleted) · %d failed",
+		fmt.Fprintf(&b, "\nSince start (%s): %d sent (%d late) · %d skipped (too late, or missed past their end) · %d gone (deleted) · %d failed",
 			short(c.now().Sub(c.Started)), st.Fired, st.Late, st.Dropped, st.Gone, st.Failed)
 	}
 	if c.FireStats != nil {
@@ -195,6 +197,14 @@ func (c Debug) llm() string {
 			calls = append(calls, fmt.Sprintf("%s %d", k, s.ToolCalls[k]))
 		}
 		fmt.Fprintf(&b, "\nTool calls: %s", strings.Join(calls, " · "))
+	}
+	if r, ok := c.RemindLLM.(llm.Reporter); ok {
+		rs := r.Status()
+		fmt.Fprintf(&b, "\nReminders: `%s` · reasoning %s · %d worded · %d errors · tokens in %s · out %s (thinking %s)",
+			rs.Model, orDash(rs.ReasoningEffort), rs.Stats.Answers, rs.Stats.Errors,
+			num(rs.Stats.InputTokens), num(rs.Stats.OutputTokens), num(rs.Stats.ReasoningTokens))
+	} else {
+		b.WriteString("\nReminders: worded by the same model")
 	}
 	return b.String()
 }

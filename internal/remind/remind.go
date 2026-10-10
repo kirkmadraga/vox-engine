@@ -19,7 +19,18 @@ type Reminder struct {
 	Rule      Rule
 	Location  string    // the timezone it was set in (day-based rules keep it)
 	Next      time.Time // when it's due next
+	Until     time.Time // a repeat's end, inclusive ("until", "for"); zero = never
 	Created   time.Time
+}
+
+// after returns when r is due after it fires at now, and whether that's
+// past its end (so this is its last time). A one-off has no next time.
+func (r Reminder) after(now time.Time) (next time.Time, last bool) {
+	if r.Rule.Once() {
+		return time.Time{}, true
+	}
+	next = r.Rule.Next(r.Next, now, r.location())
+	return next, !r.Until.IsZero() && next.After(r.Until)
 }
 
 // Store keeps reminders. store.DB implements it.

@@ -201,7 +201,105 @@ var reminder = remind.Reminder{ID: 1, UserID: 8, UserName: "Alice", GuildID: 100
 
 func (e *firerEnv) fire(t *testing.T, late bool) error {
 	t.Helper()
-	return e.f.Fire(context.Background(), reminder, late)
+	return e.f.Fire(context.Background(), reminder, remind.Firing{Late: late})
+}
+
+// The last time a repeat with an end fires says so, after the text (the
+// model's words or the owner's), before any late note.
+func TestFirerMarksTheLastOne(t *testing.T) {
+	for _, c := range []struct {
+		ask  bool
+		how  remind.Firing
+		want string
+	}{
+		{false, remind.Firing{Last: true}, "<@8> stretch <@9> @everyone (last one)"},
+		{true, remind.Firing{Last: true}, "<@8> Hey Alice, time to stretch! (last one)"},
+		{false, remind.Firing{Last: true, Late: true}, "<@8> stretch <@9> @everyone (last one) (late: I was offline when it was due)"},
+		{false, remind.Firing{}, "<@8> stretch <@9> @everyone"},
+	} {
+		e := newFirer(c.ask)
+		if err := e.f.Fire(context.Background(), reminder, c.how); err != nil || len(e.sent) != 1 || e.sent[0].Content != c.want {
+			t.Errorf("ask=%v %+v: sent %+v err %v; want %q", c.ask, c.how, e.sent, err, c.want)
+		}
+	}
+}
+
+// With a reminder model set, reminders go to it and ask's questions don't;
+// without one, reminders use ask's model.
+func TestRemindUsesTheReminderModel(t *testing.T) {
+	main, words := &fakeLLM{answer: "from ask's model"}, &fakeLLM{answer: "from the reminder model"}
+	daily, _ := newDaily(5)
+	a := &Ask{LLM: main, RemindLLM: words, Daily: daily}
+	got, err := a.Remind(context.Background(), 8, "Alice", "stretch")
+	if err != nil || got != "from the reminder model" || len(words.got) != 1 || len(main.got) != 0 {
+		t.Errorf("with a reminder model: %q %v; reminder model asked %d, ask's %d", got, err, len(words.got), len(main.got))
+	}
+	if b := balance(t, daily, 8); b != 4 {
+		t.Errorf("balance %d, want 4: still charged 1", b)
+	}
+	a.RemindLLM = nil
+	if got, _ := a.Remind(context.Background(), 8, "Alice", "stretch"); got != "from ask's model" || len(main.got) != 1 {
+		t.Errorf("without one: %q, ask's model asked %d", got, len(main.got))
+	}
+}
+
+func TestRemindMeEnds(t *testing.T) {
+	c, store, _ := newRemindMe()
+	tm := func(h int) int64 { return time.Date(2026, 10, 7, h, 0, 0, 0, zone8).Unix() }
+	got := remindArgs(t, c, "every 2h until 18:00 drink water")
+	if want := fmt.Sprintf(", then every 2h, until <t:%d:f>: that's 2 reminders, <t:%d:t> and <t:%d:t>. It's number `1`.", tm(18), tm(16), tm(18)); !strings.HasSuffix(got, want) {
+		t.Errorf("until: %q\nwant it to end with %q", got, want)
+	}
+	if rs := store.All(); len(rs) != 1 || rs[0].Text != "drink water" || !rs[0].Until.Equal(time.Unix(tm(18), 0)) {
+		t.Fatalf("saved %+v", rs)
+	}
+	if got := remindArgs(t, c, "every 2h for 3h x"); !strings.HasSuffix(got, ": that's the only one. It's number `2`.") {
+		t.Errorf("for 3h: %q", got)
+	}
+	thu, fri := time.Date(2026, 10, 8, 8, 0, 0, 0, zone8).Unix(), time.Date(2026, 10, 9, 8, 0, 0, 0, zone8).Unix()
+	if got := remindArgs(t, c, "every day at 08:00 until friday x"); !strings.Contains(got, fmt.Sprintf(": that's 2 reminders, <t:%d:t> and <t:%d:f>.", thu, fri)) {
+		t.Errorf("over two days (the second with its date): %q", got)
+	}
+	if got := remindArgs(t, c, "every 1h until 2026-12-24 x"); !strings.HasSuffix(got, ": more than 5 reminders. It's number `4`.") {
+		t.Errorf("many: %q", got)
+	}
+	if got := remindArgs(t, c, "every 2h x"); strings.Contains(got, "until") {
+		t.Errorf("no end: %q", got)
+	}
+	// Slash: the end travels in the when.
+	got = remindIn(t, c, 100, Request{When: "every 2h until 18:00", Args: "until dinner"}).Content
+	i := slices.IndexFunc(store.All(), func(r remind.Reminder) bool { return r.ID == 6 })
+	if r := store.All()[i]; !strings.Contains(got, "that's 2 reminders") || r.Text != "until dinner" || r.Until.IsZero() {
+		t.Errorf("slash: %q, saved %+v", got, r)
+	}
+	list := remindArgs(t, c, "list")
+	if want := fmt.Sprintf(", every 2h, until <t:%d:f>: drink water", tm(18)); !strings.Contains(list, want) {
+		t.Errorf("list lacks %q:\n%s", want, list)
+	}
+	if strings.Count(list, "until <t:") != 5 {
+		t.Errorf("list: want the end on the 5 that have one:\n%s", list)
+	}
+}
+
+func TestRemindMeEndMistakes(t *testing.T) {
+	c, store, _ := newRemindMe()
+	for args, want := range map[string]string{
+		"in 2h until 18:00 x":      "I couldn't set that: only repeating reminders (`every …`) can have an end.",
+		"every 2h until fridy x":   "I couldn't set that: after `until`, write when it ends",
+		"every 2h for 1h x":        "I couldn't set that: that ends before the first reminder would come.",
+		"every 2h until 18:00":     "What should I remind you about?",
+		"every 2h for 3h for 2h x": "I couldn't set that: use either `until` or `for`, not both.",
+	} {
+		if got := remindArgs(t, c, args); !strings.Contains(got, want) || !strings.Contains(got, "Write `remindme <when> <what>`") {
+			t.Errorf("%q: %q, want %q and the help", args, got, want)
+		}
+	}
+	if len(store.All()) != 0 {
+		t.Errorf("mistakes saved reminders: %+v", store.All())
+	}
+	if !strings.Contains(c.help(), "`remindme every 2h until 18:00 drink water`: a repeat that stops (also until friday, until 12-24, for 3d)") {
+		t.Errorf("the help must show until: %q", c.help())
+	}
 }
 
 func TestFirerSendsTheOwnTextWithoutAsk(t *testing.T) {

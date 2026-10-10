@@ -461,11 +461,20 @@ func TestParseLLMBridgeXAI(t *testing.T) {
 	if err != nil || cfg.LLMBaseURL != "http://localhost:8080/v1" || cfg.LLMMaxTokens != 800 || cfg.LLMMaxToolTurns != 0 || cfg.LLMReasoningEffort != "low" {
 		t.Errorf("openai overrides: %+v, %v", cfg, err)
 	}
+	if cfg.LLMReminderModel != "" || cfg.LLMReminderReasoningEffort != "" {
+		t.Errorf("reminder model: unset by default, got %q %q", cfg.LLMReminderModel, cfg.LLMReminderReasoningEffort)
+	}
+	cfg, err = Parse([]byte(base+"llm_model: grok-4.7\nllm_reasoning_effort: none\n"+
+		"llm_reminder_model: \" grok-4.3 \"\nllm_reminder_reasoning_effort: None\n"), envWith(fakeToken, "k"))
+	if err != nil || cfg.LLMReminderModel != "grok-4.3" || cfg.LLMReminderReasoningEffort != "none" || cfg.LLMReasoningEffort != "none" {
+		t.Errorf("reminder model: %q %q (ask's effort %q), %v", cfg.LLMReminderModel, cfg.LLMReminderReasoningEffort, cfg.LLMReasoningEffort, err)
+	}
 	for yaml, want := range map[string]string{
-		"llm_max_tokens: 0\n":         "llm_max_tokens",
-		"llm_max_tool_turns: -1\n":    "llm_max_tool_turns",
-		"llm_reasoning_effort: max\n": "llm_reasoning_effort",
-		"llm_base_url: ftp://x\n":     "llm_base_url",
+		"llm_max_tokens: 0\n":                  "llm_max_tokens",
+		"llm_max_tool_turns: -1\n":             "llm_max_tool_turns",
+		"llm_reasoning_effort: max\n":          "llm_reasoning_effort",
+		"llm_reminder_reasoning_effort: off\n": "llm_reminder_reasoning_effort",
+		"llm_base_url: ftp://x\n":              "llm_base_url",
 	} {
 		if _, err := Parse([]byte(base+"llm_model: m\n"+yaml), envWith(fakeToken, "k")); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err = %v, want %q", yaml, err, want)

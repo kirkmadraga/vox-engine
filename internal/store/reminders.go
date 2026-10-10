@@ -17,17 +17,25 @@ var _ remind.Store = (*DB)(nil)
 // AddReminder implements remind.Store.
 func (s *DB) AddReminder(ctx context.Context, r remind.Reminder) (int64, error) {
 	res, err := s.sql.ExecContext(ctx,
-		`INSERT INTO reminders (user_id, user_name, guild_id, channel_id, text, rule, location, next_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO reminders (user_id, user_name, guild_id, channel_id, text, rule, location, next_at, until_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		int64(r.UserID), r.UserName, int64(r.GuildID), int64(r.ChannelID), r.Text, r.Rule.Encode(), r.Location,
-		r.Next.Unix(), formatTime(r.Created))
+		r.Next.Unix(), unixOrZero(r.Until), formatTime(r.Created))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-const reminderColumns = `id, user_id, user_name, guild_id, channel_id, text, rule, location, next_at, created_at`
+const reminderColumns = `id, user_id, user_name, guild_id, channel_id, text, rule, location, next_at, until_at, created_at`
+
+// unixOrZero is t in Unix seconds, with the zero time (no end) as 0.
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
 
 // UserReminders implements remind.Store.
 func (s *DB) UserReminders(ctx context.Context, user snowflake.ID) ([]remind.Reminder, error) {
@@ -84,13 +92,16 @@ func (s *DB) ReminderCounts(ctx context.Context) (total, repeating int, err erro
 
 func scanReminder(row scanner) (remind.Reminder, error) {
 	var r remind.Reminder
-	var user, guild, channel, next int64
+	var user, guild, channel, next, until int64
 	var rule, created string
-	if err := row.Scan(&r.ID, &user, &r.UserName, &guild, &channel, &r.Text, &rule, &r.Location, &next, &created); err != nil {
+	if err := row.Scan(&r.ID, &user, &r.UserName, &guild, &channel, &r.Text, &rule, &r.Location, &next, &until, &created); err != nil {
 		return r, err
 	}
 	r.UserID, r.GuildID, r.ChannelID = snowflake.ID(user), snowflake.ID(guild), snowflake.ID(channel)
 	r.Next = time.Unix(next, 0).UTC()
+	if until != 0 {
+		r.Until = time.Unix(until, 0).UTC()
+	}
 	var err error
 	if r.Rule, err = remind.DecodeRule(rule); err != nil {
 		return r, fmt.Errorf("reminder %d: %w", r.ID, err)

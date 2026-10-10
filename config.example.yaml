@@ -45,7 +45,15 @@ test_tone: ./assets/tone.opus # played by "@Bot test"; committed with the code
 # llm_model: grok-4.3
 # llm_base_url: https://api.x.ai/v1 # the provider's default; change for a proxy or local server
 llm_max_tokens: 500        # longest answer, in tokens (xAI counts only the visible answer, not thinking)
-# llm_reasoning_effort: low  # low, medium or high, for models that think first; unset = model default
+# llm_reasoning_effort: low  # none, low, medium or high, for models that think first; unset = model default
+#                            # (none = no thinking, only where the model allows it, e.g. xAI's grok-4.3)
+# Wording reminders (see Reminders below) can use their own model and effort,
+# e.g. a cheaper one that doesn't think first, so they arrive quickly. With
+# both unset, reminders follow llm_model and llm_reasoning_effort; with only
+# llm_reminder_model set, its effort is that model's default. Reminders never
+# search.
+# llm_reminder_model: grok-4.3
+# llm_reminder_reasoning_effort: none
 # Web search: off; on-request (only when a question starts with "search", or
 # /ask search:True; recommended); or always (the model decides whether to search).
 # A search answer can cost 5-10x a plain one (search results are fed back in).

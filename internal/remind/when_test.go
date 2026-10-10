@@ -2,6 +2,7 @@ package remind
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -102,6 +103,135 @@ func TestParseRefuses(t *testing.T) {
 	}
 	if _, _, err := Parse("soon x", now, zone8); !errors.Is(err, ErrUsage) {
 		t.Errorf("an unknown start: %v, want ErrUsage", err)
+	}
+}
+
+// endOf is the last second of a day in zone8.
+func endOf(y int, mo time.Month, d int) time.Time { return time.Date(y, mo, d, 23, 59, 59, 0, zone8) }
+
+func TestParseEnds(t *testing.T) {
+	cases := []struct {
+		in    string
+		until time.Time
+		text  string
+	}{
+		{"every 2h until 18:00 drink water", at(2026, 10, 7, 18, 0), "drink water"},
+		{"every 2h until 13:00 x", at(2026, 10, 8, 13, 0), "x"}, // passed today: tomorrow's
+		{"every 2h until 14:00 x", at(2026, 10, 8, 14, 0), "x"}, // exactly now: tomorrow's
+		{"every 2h until 6pm x", at(2026, 10, 7, 18, 0), "x"},
+		{"every 2h until 6 pm x", at(2026, 10, 7, 18, 0), "x"},
+		{"every day at 08:00 until friday standup", endOf(2026, 10, 9), "standup"}, // the whole day
+		{"every day at 08:00 until friday at 17:00 x", at(2026, 10, 9, 17, 0), "x"},
+		{"every 2h UNTIL Friday x", endOf(2026, 10, 9), "x"},
+		{"every 2h until wednesday x", endOf(2026, 10, 7), "x"},         // today is Wednesday: through today
+		{"every 2h until wed at 20:00 x", at(2026, 10, 7, 20, 0), "x"},  // still ahead: today
+		{"every 1h until wed at 13:00 x", at(2026, 10, 14, 13, 0), "x"}, // passed: next week's
+		{"every 2h until tomorrow x", endOf(2026, 10, 8), "x"},          // the whole day
+		{"every 2h until tomorrow at 12:00 x", at(2026, 10, 8, 12, 0), "x"},
+		{"every day until 2026-12-24 timesheet", endOf(2026, 12, 24), "timesheet"},
+		{"every day until 12-24 x", endOf(2026, 12, 24), "x"},
+		{"every 2h until 10-07 x", endOf(2026, 10, 7), "x"}, // today, still going
+		{"every 2h until 10-06 x", endOf(2027, 10, 6), "x"}, // no year: the next one
+		{"every 2h until 2026-12-24 at 17:00 x", at(2026, 12, 24, 17, 0), "x"},
+		{"every 2h for 3h x", now.Add(3 * time.Hour), "x"},
+		{"every 2h for 2h x", now.Add(2 * time.Hour), "x"}, // ends exactly at the first: still fires once
+		{"every day at 08:00 for 1w vitamins", now.Add(7 * 24 * time.Hour), "vitamins"},
+		{"every 2h FOR 1d x", now.Add(24 * time.Hour), "x"},
+		// Text that merely contains the words.
+		{"every 2h until 18:00 for the kids", at(2026, 10, 7, 18, 0), "for the kids"},
+		{"every 2h call until 5", time.Time{}, "call until 5"},
+		{"every day at 08:00 for the standup", time.Time{}, "for the standup"},
+		{"every 2h drink water", time.Time{}, "drink water"},
+	}
+	for _, c := range cases {
+		w, text, err := Parse(c.in, now, zone8)
+		if err != nil || !w.Until.Equal(c.until) || text != c.text || w.Rule.Once() {
+			t.Errorf("%q: until %v text %q err %v; want %v %q", c.in, w.Until, text, err, c.until, c.text)
+		}
+	}
+}
+
+// After a one-off, "until" and "for" are its text unless they read as an end,
+// which only a repeat can have.
+func TestParseEndsAfterOneOffs(t *testing.T) {
+	for in, text := range map[string]string{
+		"in 2h wait until mom calls": "wait until mom calls",
+		"in 2h until mom calls":      "until mom calls",
+		"in 1h for the meeting":      "for the meeting",
+		"at 18:00 until later":       "until later",
+	} {
+		if w, got, err := Parse(in, now, zone8); err != nil || got != text || !w.Until.IsZero() {
+			t.Errorf("%q: text %q until %v err %v; want text %q", in, got, w.Until, err, text)
+		}
+	}
+	for _, in := range []string{"in 2h until 18:00 x", "in 2h for 3h x", "at 18:00 until 19:00 x", "tomorrow until friday x", "on friday for 1d x"} {
+		if _, _, err := Parse(in, now, zone8); !errors.Is(err, errOnlyRepeats) {
+			t.Errorf("%q: %v, want errOnlyRepeats", in, err)
+		}
+	}
+}
+
+func TestParseEndRefusals(t *testing.T) {
+	for in, want := range map[string]string{
+		"every 2h until 6 x":                  errUntil.Error(), // ambiguous, like "at 6"
+		"every 2h until fridy x":              errUntil.Error(),
+		"every 2h until mom calls":            errUntil.Error(),
+		"every 2h until":                      errUntil.Error(),
+		"every 2h until friday at x":          errUntil.Error(),
+		"every 2h until 2026-02-30 x":         "there's no such date",
+		"every 2h until 2026-01-01 x":         "that end has already passed",
+		"every 2h until 2027-12-01 x":         "that end is more than a year away",
+		"every 2h for 400d x":                 "that end is more than a year away",
+		"every 2h for 1h x":                   "that ends before the first reminder would come",
+		"every day at 08:00 until 07:00 x":    "that ends before the first reminder would come", // tomorrow 07:00, first at 08:00
+		"every 2h until 18:00 for 2h x":       errBothEnds.Error(),
+		"every 2h for 3h until friday x":      errBothEnds.Error(),
+		"every 2h until 18:00 until friday x": errBothEnds.Error(),
+	} {
+		if _, _, err := Parse(in, now, zone8); err == nil || err.Error() != want {
+			t.Errorf("%q: %v, want %q", in, err, want)
+		}
+	}
+}
+
+// Ends are whole seconds like the first time, so "for" ending exactly at the
+// first reminder still allows it.
+func TestParseEndRoundsUp(t *testing.T) {
+	almost := time.Date(2026, 10, 7, 18, 29, 30, 500, zone8)
+	w, _, err := Parse("every 2h for 2h x", almost, zone8)
+	if err != nil || !w.Until.Equal(w.At) || w.Until.Nanosecond() != 0 {
+		t.Errorf("for 2h from a fraction of a second: at %v until %v err %v", w.At, w.Until, err)
+	}
+}
+
+func TestWhenTimes(t *testing.T) {
+	parse := func(in string) When {
+		w, _, err := Parse(in, now, zone8)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		return w
+	}
+	cases := []struct {
+		in   string
+		want []time.Time
+		ok   bool
+	}{
+		{"every 2h for 3h x", []time.Time{at(2026, 10, 7, 16, 0)}, true},
+		{"every 2h until 18:00 x", []time.Time{at(2026, 10, 7, 16, 0), at(2026, 10, 7, 18, 0)}, true},
+		{"every day at 08:00 until friday x", []time.Time{at(2026, 10, 8, 8, 0), at(2026, 10, 9, 8, 0)}, true},
+		{"every 2h until 2026-10-08 at 00:00 x", []time.Time{at(2026, 10, 7, 16, 0), at(2026, 10, 7, 18, 0), at(2026, 10, 7, 20, 0),
+			at(2026, 10, 7, 22, 0), at(2026, 10, 8, 0, 0)}, true}, // exactly 5
+		{"every 1h until 2026-12-24 x", []time.Time{now.Add(1 * time.Hour), now.Add(2 * time.Hour), now.Add(3 * time.Hour),
+			now.Add(4 * time.Hour), now.Add(5 * time.Hour)}, false}, // more than 5
+		{"in 2h x", []time.Time{now.Add(2 * time.Hour)}, true},
+		{"every 2h x", []time.Time{now.Add(2 * time.Hour)}, false}, // no end
+	}
+	for _, c := range cases {
+		got, ok := parse(c.in).Times(zone8, 5)
+		if ok != c.ok || !slices.EqualFunc(got, c.want, time.Time.Equal) {
+			t.Errorf("%q: %v %v; want %v %v", c.in, got, ok, c.want, c.ok)
+		}
 	}
 }
 

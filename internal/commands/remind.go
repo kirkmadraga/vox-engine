@@ -50,6 +50,7 @@ func (c RemindMe) help() string {
 		"`remindme on 2026-12-24 wrap gifts`: that date (12-24: the next one)\n" +
 		"`remindme every 2h drink water`: over and over, at least an hour apart\n" +
 		"`remindme every day at 08:00 standup`: also every weekday, weekend, monday or mon,thu\n" +
+		"`remindme every 2h until 18:00 drink water`: a repeat that stops (also until friday, until 12-24, for 3d)\n" +
 		"`remindme list`: your reminders here\n" +
 		"`remindme cancel 12`: remove one, by its number from the list\n" +
 		fmt.Sprintf("Times are %s. Up to %d reminders, %d characters each.", c.location(), c.maxPerUser(), c.maxChars())
@@ -104,14 +105,14 @@ func (c RemindMe) set(ctx context.Context, req Request, args string) error {
 	}
 	id, err := c.Store.AddReminder(ctx, remind.Reminder{
 		UserID: req.AuthorID, UserName: req.AuthorName, GuildID: req.GuildID, ChannelID: req.ChannelID,
-		Text: text, Rule: when.Rule, Location: c.location().String(), Next: when.At, Created: c.now(),
+		Text: text, Rule: when.Rule, Location: c.location().String(), Next: when.At, Until: when.Until, Created: c.now(),
 	})
 	if err != nil {
 		c.logger().Error("remindme: couldn't save", "user", req.AuthorID, "err", err)
 		return privateReply(ctx, req, saveFailed)
 	}
 	c.logger().Info("remindme: set", "reminder", id, "user", req.AuthorID, "guild", req.GuildID, "channel", req.ChannelID,
-		"due", when.At.UTC(), "repeats", !when.Rule.Once(), "text_len", utf8.RuneCountInString(text))
+		"due", when.At.UTC(), "repeats", !when.Rule.Once(), "ends", !when.Until.IsZero(), "text_len", utf8.RuneCountInString(text))
 	if c.Wake != nil {
 		c.Wake()
 	}
@@ -122,7 +123,36 @@ func (c RemindMe) set(ctx context.Context, req Request, args string) error {
 			msg += " (" + c.location().String() + ")"
 		}
 	}
+	if !when.Until.IsZero() {
+		msg += fmt.Sprintf(", until <t:%d:f>%s", when.Until.Unix(), c.count(when))
+	}
 	return privateReply(ctx, req, fmt.Sprintf("%s. It's number `%d`.", msg, id))
+}
+
+// maxListedTimes is how many reminder times a confirmation spells out.
+const maxListedTimes = 5
+
+// count says how many times a repeat with an end will fire, listing them
+// when there are a few: "that's 2 reminders: 16:00 and 18:00". Times on the
+// first one's day show as a time of day only.
+func (c RemindMe) count(w remind.When) string {
+	times, ok := w.Times(c.location(), maxListedTimes)
+	if !ok {
+		return fmt.Sprintf(": more than %d reminders", maxListedTimes)
+	}
+	if len(times) == 1 {
+		return ": that's the only one"
+	}
+	first := times[0].In(c.location())
+	parts := make([]string, len(times))
+	for i, t := range times {
+		style := "f"
+		if l := t.In(c.location()); l.Year() == first.Year() && l.YearDay() == first.YearDay() {
+			style = "t"
+		}
+		parts[i] = fmt.Sprintf("<t:%d:%s>", t.Unix(), style)
+	}
+	return fmt.Sprintf(": that's %d reminders, %s and %s", len(times), strings.Join(parts[:len(parts)-1], ", "), parts[len(parts)-1])
 }
 
 // mistake explains a when that wasn't understood, with the help.
@@ -151,6 +181,9 @@ func (c RemindMe) list(ctx context.Context, req Request) error {
 		fmt.Fprintf(&b, "\n`%d` <t:%d:f> in <#%s>", r.ID, r.Next.Unix(), r.ChannelID)
 		if !r.Rule.Once() {
 			b.WriteString(", " + r.Rule.String())
+		}
+		if !r.Until.IsZero() {
+			fmt.Fprintf(&b, ", until <t:%d:f>", r.Until.Unix())
 		}
 		b.WriteString(": " + oneLine(r.Text, 80))
 	}
@@ -251,7 +284,7 @@ func (f *RemindFirer) Stats() FireStats {
 }
 
 // Fire implements remind.FireFunc.
-func (f *RemindFirer) Fire(ctx context.Context, r remind.Reminder, late bool) error {
+func (f *RemindFirer) Fire(ctx context.Context, r remind.Reminder, how remind.Firing) error {
 	if !f.Allowed(ctx, r.UserID, r.GuildID, RemindCommand) {
 		return fmt.Errorf("%w: no remindme access", remind.ErrGone)
 	}
@@ -269,7 +302,10 @@ func (f *RemindFirer) Fire(ctx context.Context, r remind.Reminder, late bool) er
 		f.plain.Add(1)
 	}
 	content := Mention(r.UserID) + " " + text
-	if late {
+	if how.Last {
+		content += " (last one)"
+	}
+	if how.Late {
 		content += " (late: I was offline when it was due)"
 	}
 	reply := Reply{Content: truncate(content, maxMessageLen), Mentions: []snowflake.ID{r.UserID}}

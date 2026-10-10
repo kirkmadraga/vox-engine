@@ -115,6 +115,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		"llm_daily_reset_timezone", cfg.LLMDailyResetLocation, "llm_weights", fmt.Sprintf("search=%d image=%d", cfg.LLMWeightSearch, cfg.LLMWeightImage),
 		"discord_message_content", cfg.DiscordMessageContent,
 		"llm_model", cfg.LLMModel, "llm_max_tokens", cfg.LLMMaxTokens, "llm_reasoning_effort", cfg.LLMReasoningEffort,
+		"llm_reminder_model", cfg.LLMReminderModel, "llm_reminder_reasoning_effort", cfg.LLMReminderReasoningEffort,
 		"llm_web_search", cfg.LLMWebSearch, "llm_web_search_images", cfg.LLMWebSearchImages, "llm_max_tool_turns", cfg.LLMMaxToolTurns, "disgo", disgo.Version)
 	logger.Debug("debug logging enabled")
 
@@ -297,17 +298,27 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	memory := &commands.ChannelMemory{MaxMessages: cfg.LLMHistoryMessages, MaxAge: cfg.LLMHistoryMaxAge}
 	answers := &commands.AnswerLog{} // a reply to one of these continues the conversation
 	if askOn {
-		provider, err := llm.New(llm.Settings{
+		settings := llm.Settings{
 			Provider: cfg.LLMProvider, BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: cfg.LLMAPIKey,
 			Instructions: cfg.LLMSystemPrompt, MaxOutputTokens: cfg.LLMMaxTokens, ReasoningEffort: cfg.LLMReasoningEffort,
 			WebSearch: cfg.LLMWebSearch != "off", ImageUnderstanding: cfg.LLMWebSearchImages, MaxTurns: cfg.LLMMaxToolTurns,
 			Logger: logger,
-		})
+		}
+		provider, err := llm.New(settings)
 		if err != nil {
 			return err
 		}
+		var remindProvider llm.Provider // nil: reminders use provider
+		if rs, ok := reminderSettings(cfg, settings); ok {
+			if remindProvider, err = llm.New(rs); err != nil {
+				return err
+			}
+			logger.Info("reminders worded by their own model", "model", rs.Model, "reasoning_effort", rs.ReasoningEffort)
+		} else if cfg.LLMProvider == "echo" && (cfg.LLMReminderModel != "" || cfg.LLMReminderReasoningEffort != "") {
+			logger.Info("llm_reminder_model and llm_reminder_reasoning_effort are ignored with the echo stand-in")
+		}
 		askCmd := &commands.Ask{
-			LLM: provider, Logger: logger,
+			LLM: provider, RemindLLM: remindProvider, Logger: logger,
 			Cooldown: cfg.LLMUserCooldown, MaxConcurrent: cfg.LLMMaxConcurrent, IsOwner: policy.IsOwner,
 			MaxPromptChars: cfg.LLMMaxPromptChars, Timeout: cfg.LLMTimeout, Search: cfg.LLMWebSearch,
 			Daily: &commands.DailyLimit{
@@ -318,7 +329,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 			Memory: memory, Answers: answers,
 		}
 		cmds = append(cmds, askCmd, commands.Forget{Memory: memory})
-		debug.LLM, debug.Ask = provider, askCmd
+		debug.LLM, debug.RemindLLM, debug.Ask = provider, remindProvider, askCmd
 		firer.Ask = askCmd // reminders for people with ask (and allowance left) are worded by the model
 		// ask's own limit, plus time to send the reply (or the "couldn't answer" error).
 		discordio.HandleTimeout = max(discordio.HandleTimeout, cfg.LLMTimeout+15*time.Second)
@@ -371,6 +382,23 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 	defer cancel()
 	client.Close(closeCtx)
 	return nil
+}
+
+// reminderSettings are the model settings for wording reminders, when
+// llm_reminder_model or llm_reminder_reasoning_effort sets them apart from
+// ask's (ok false: reminders use ask's provider). Wording a reminder never
+// searches or looks at images. The echo stand-in has no models to choose.
+func reminderSettings(cfg config.Config, ask llm.Settings) (llm.Settings, bool) {
+	if cfg.LLMProvider == "echo" || (cfg.LLMReminderModel == "" && cfg.LLMReminderReasoningEffort == "") {
+		return llm.Settings{}, false
+	}
+	s := ask
+	if cfg.LLMReminderModel != "" {
+		s.Model = cfg.LLMReminderModel
+	}
+	s.ReasoningEffort = cfg.LLMReminderReasoningEffort
+	s.WebSearch, s.ImageUnderstanding = false, false
+	return s, true
 }
 
 // findTool returns the configured path for a tool, or finds it on PATH

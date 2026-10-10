@@ -60,6 +60,24 @@ func TestReminders(t *testing.T) {
 	if ok, _ := db.DeleteReminder(ctx, other); ok {
 		t.Error("deleting twice reported a change")
 	}
+	// An end round-trips through a restart; no end stays none.
+	ends, err := db.AddReminder(ctx, remind.Reminder{UserID: 9, GuildID: 100, ChannelID: 5, Text: "x", Rule: remind.Rule{Every: time.Hour},
+		Next: base, Until: base.Add(5 * time.Hour), Created: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	db = openAt(t, path)
+	for _, r := range mustAll(t, db) {
+		switch {
+		case r.ID == ends && !r.Until.Equal(base.Add(5*time.Hour)):
+			t.Errorf("end lost across a restart: %v", r.Until)
+		case r.ID != ends && !r.Until.IsZero():
+			t.Errorf("reminder %d gained an end: %v", r.ID, r.Until)
+		}
+	}
+	db.DeleteReminder(ctx, ends)
+
 	third := add(9, 100, 30*time.Minute, remind.Rule{})
 	all, err := db.AllReminders(ctx)
 	if err != nil || len(all) != 3 || all[0].ID != third || all[1].ID != late || all[2].ID != soon {
@@ -103,3 +121,50 @@ func TestUpgradeFromSchema3AddsReminders(t *testing.T) {
 }
 
 func snowflakeID(n uint64) snowflake.ID { return snowflake.ID(n) }
+
+func mustAll(t *testing.T, db *DB) []remind.Reminder {
+	t.Helper()
+	rs, err := db.AllReminders(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs
+}
+
+// A v1.2.x database (schema 5) upgrades in place: reminders survive with no
+// end, as do open commands, grants and balances.
+func TestUpgradeFromSchema5AddsReminderEnds(t *testing.T) {
+	path := tempDB(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range append(append([]string{}, migrations[:5]...),
+		`PRAGMA user_version = 5`,
+		`INSERT INTO grants (user_id, command, added_by, added_at) VALUES (8, 'remindme', 7, '2026-09-29T05:00:00Z')`,
+		`INSERT INTO open_commands (guild_id, command, added_by, added_at) VALUES (100, 'play', 7, '2026-10-07T05:00:00Z')`,
+		`INSERT INTO ask_balances (user_id, day, balance) VALUES (8, '2026-10-07', 4)`,
+		`INSERT INTO reminders (user_id, guild_id, channel_id, text, rule, next_at, created_at) VALUES (8, 100, 5, 'stretch', 'every:7200', 1791379641, '2026-10-07T05:00:00Z')`) {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	raw.Close()
+
+	db := openAt(t, path)
+	ctx := context.Background()
+	rs := mustAll(t, db)
+	if len(rs) != 1 || rs[0].Text != "stretch" || rs[0].Rule.Every != 2*time.Hour || !rs[0].Until.IsZero() {
+		t.Errorf("reminders after upgrade: %+v", rs)
+	}
+	snap, err := db.Access().Snapshot(ctx)
+	if err != nil || len(snap.Grants) != 1 || len(snap.Open) != 1 {
+		t.Errorf("access after upgrade: %+v, %v", snap, err)
+	}
+	if _, b, found, err := db.DailyBalance(ctx, 8); !found || b != 4 || err != nil {
+		t.Errorf("balance after upgrade: %d %v %v", b, found, err)
+	}
+}

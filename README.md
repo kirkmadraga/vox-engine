@@ -29,13 +29,13 @@ Use a slash command (`/play`) or mention the bot (`@Bot play`); both work the sa
 |---|---|---|
 | `ping` | Replies "@you pong" | Anyone, in allowed servers |
 | `play <YouTube or Spotify link>` | Adds the track to this server's queue and joins your voice channel (Spotify: single tracks only, for now) | Granted users |
-| `play <search words>` | Lists the top YouTube results (10 by default, `search_results` in `config.yaml`) | Granted users |
+| `play <search words>` | Lists the top YouTube results | Granted users |
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
-| `remindme <when> <what>` | Pings you in this channel at that time, e.g. `in 2h`, `at 18:30`, `on friday`, `every day at 08:00` (`remindme` alone lists the formats). With `ask` and allowance left, the model words it | Granted users (its own grant) |
+| `remindme <when> <what>` | Pings you in this channel at that time, e.g. `in 2h`, `at 18:30`, `on friday`, `every day at 08:00`, `every 2h until 18:00` (`remindme` alone lists the formats). With `ask` and allowance left, the model words it | Granted users (its own grant) |
 | `remindme list` / `cancel <number>` | Your reminders in this server; remove one | Same as `remindme` |
-| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default; set up and explained in `config.example.yaml`) | Granted users (its own grant) |
+| `ask <prompt>`, `@Bot <prompt>`, or a reply to one of its answers | Asks a language model (experimental, off by default) | Granted users (its own grant) |
 | `forget` | Clears this channel's `ask` conversation memory | Same as `ask` |
 | `allow` / `deny guild [id]` | Allow or remove a server | Owners |
 | `allow` / `deny @user [command]` | Grant or revoke a command for one person (default `play`) | Owners |

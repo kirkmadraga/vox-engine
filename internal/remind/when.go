@@ -131,10 +131,30 @@ func DecodeRule(s string) (Rule, error) {
 	return r, nil
 }
 
-// When is a parsed time: the first time it's due, and how it repeats.
+// When is a parsed time: the first time it's due, how it repeats, and when a
+// repeat ends (zero: never).
 type When struct {
-	At   time.Time
-	Rule Rule
+	At    time.Time
+	Rule  Rule
+	Until time.Time // the last moment it may fire, inclusive
+}
+
+// Times lists when w fires, up to max of them (for the confirmation): just At
+// for a one-off, and At onwards through Until for a repeat with an end. ok is
+// false when there are more than max (or no end), so the list is cut short.
+func (w When) Times(loc *time.Location, max int) (times []time.Time, ok bool) {
+	for t := w.At; ; {
+		times = append(times, t)
+		if w.Rule.Once() {
+			return times, true
+		}
+		if t = w.Rule.Next(t, t, loc); w.Until.IsZero() || t.After(w.Until) {
+			return times, !w.Until.IsZero()
+		}
+		if len(times) == max {
+			return times, false
+		}
+	}
 }
 
 // Parse reads a when from the start of text and returns it with the rest of
@@ -145,10 +165,12 @@ func Parse(text string, now time.Time, loc *time.Location) (When, string, error)
 	if err != nil {
 		return When{}, "", err
 	}
-	// Saved times are whole seconds: round up, so it never fires early.
-	if t := w.At.Truncate(time.Second); !t.Equal(w.At) {
-		w.At = t.Add(time.Second)
+	if err := p.end(&w); err != nil {
+		return When{}, "", err
 	}
+	// Saved times are whole seconds: round up, so it never fires early (and
+	// an end stays inclusive: "every 2h for 2h" still fires once).
+	w.At, w.Until = roundUp(w.At), roundUp(w.Until)
 	if w.Rule.Once() {
 		switch ahead := w.At.Sub(now); {
 		case ahead <= 0:
@@ -159,7 +181,137 @@ func Parse(text string, now time.Time, loc *time.Location) (When, string, error)
 	} else if w.Rule.Every > 0 && w.Rule.Every < MinInterval {
 		return When{}, "", fmt.Errorf("repeats must be at least %s apart", formatDuration(MinInterval))
 	}
+	if !w.Until.IsZero() {
+		switch {
+		case !w.Until.After(now):
+			return When{}, "", errors.New("that end has already passed")
+		case w.Until.Sub(now) > MaxAhead:
+			return When{}, "", errors.New("that end is more than a year away")
+		case w.At.After(w.Until):
+			return When{}, "", errors.New("that ends before the first reminder would come")
+		}
+	}
 	return w, strings.Join(p.words[p.i:], " "), nil
+}
+
+// roundUp rounds t up to a whole second (the zero time stays zero).
+func roundUp(t time.Time) time.Time {
+	if r := t.Truncate(time.Second); !r.Equal(t) {
+		return r.Add(time.Second)
+	}
+	return t
+}
+
+var (
+	errOnlyRepeats = errors.New("only repeating reminders (`every …`) can have an end")
+	errUntil       = errors.New("after `until`, write when it ends, e.g. `until 18:00`, `until friday` or `until 2026-12-24`")
+	errBothEnds    = errors.New("use either `until` or `for`, not both")
+)
+
+// end reads how a repeat ends: "until <when>" or "for <duration>", right
+// after the repeat. After a repeat, "until" must be followed by an end. "for"
+// counts only before a duration, so "every day at 08:00 for the standup"
+// stays text. After a one-off, a real end is refused; anything else is the
+// reminder's text ("in 2h wait until mom calls", "in 1h for the meeting").
+func (p *parser) end(w *When) error {
+	start := p.i
+	switch p.peek() {
+	case "until":
+		p.i++
+		until, err := p.until()
+		if w.Rule.Once() {
+			if err != nil {
+				p.i = start
+				return nil
+			}
+			return errOnlyRepeats
+		}
+		if err != nil {
+			return err
+		}
+		w.Until = until
+	case "for":
+		p.i++
+		d, ok := parseDuration(p.peek())
+		if !ok {
+			p.i = start
+			return nil
+		}
+		p.i++
+		if w.Rule.Once() {
+			return errOnlyRepeats
+		}
+		w.Until = p.now.Add(d)
+	default:
+		return nil
+	}
+	// A second end right after the first is a mistake, not text.
+	again, other := *p, When{Rule: w.Rule}
+	if again.end(&other) == nil && !other.Until.IsZero() {
+		return errBothEnds
+	}
+	return nil
+}
+
+// until reads the end after "until": a time ("18:00": today, or tomorrow if
+// it's passed), or "tomorrow", a weekday or a date, each with an optional "at
+// <time>". Without a time the whole day counts, so "until friday" includes
+// Friday.
+func (p *parser) until() (time.Time, error) {
+	word := p.peek()
+	var date time.Time
+	weekday, hasYear := false, true
+	if d, ok := weekdays[word]; ok {
+		p.i++
+		weekday = true
+		date = p.day((int(d)-int(p.now.Weekday())+7)%7, 0, 0) // today, if it's that day
+	} else if word == "tomorrow" {
+		p.i++
+		date = p.day(1, 0, 0)
+	} else if year, month, day, withYear, ok := parseDate(word); ok {
+		p.i++
+		hasYear = withYear
+		if !withYear {
+			year = p.now.Year()
+		}
+		date = time.Date(year, time.Month(month), day, 0, 0, 0, 0, p.loc)
+		if date.Month() != time.Month(month) || date.Day() != day {
+			return time.Time{}, errors.New("there's no such date")
+		}
+	} else {
+		h, m, err := p.clock()
+		if err != nil {
+			return time.Time{}, errUntil
+		}
+		end := p.day(0, h, m)
+		if !end.After(p.now) {
+			end = p.day(1, h, m)
+		}
+		return end, nil
+	}
+	end := endOfDay(date)
+	if p.peek() == "at" {
+		p.i++
+		h, m, err := p.clock()
+		if err != nil {
+			return time.Time{}, errUntil
+		}
+		end = time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, p.loc)
+	}
+	if !end.After(p.now) {
+		switch {
+		case weekday:
+			end = end.AddDate(0, 0, 7) // "until friday at 17:00" on a Friday after 17:00: next week's
+		case !hasYear:
+			end = end.AddDate(1, 0, 0) // "until 12-24": the next one coming
+		}
+	}
+	return end, nil
+}
+
+// endOfDay is the last second of day's date.
+func endOfDay(day time.Time) time.Time {
+	return time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, day.Location()).Add(-time.Second)
 }
 
 type parser struct {
@@ -428,4 +580,5 @@ func formatDuration(d time.Duration) string {
 
 // Usage is the short help shown when a when isn't understood.
 const Usage = "Tell me when, e.g. `in 2h`, `at 18:30`, `tomorrow at 9am`, `on friday at 20:00`, " +
-	"`on 2026-12-24`, `every 2h`, `every day at 08:00`, `every weekday at 9:00`, `every mon,thu at 19:00`."
+	"`on 2026-12-24`, `every 2h`, `every day at 08:00`, `every weekday at 9:00`, `every mon,thu at 19:00`, " +
+	"`every 2h until 18:00`, `every day at 08:00 for 1w`."

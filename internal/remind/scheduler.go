@@ -13,12 +13,19 @@ import (
 // more (its owner lost access, or the channel is gone): it's deleted.
 var ErrGone = errors.New("reminder can't be delivered any more")
 
-// FireFunc delivers r. late is true when it came due while the bot was off
-// (before Run started), so it's being sent after its time; a reminder merely
-// delayed behind others while the bot runs isn't late. Errors other than
-// ErrGone are logged; the reminder then moves on as if sent (a one-off is
-// deleted), so nothing piles up.
-type FireFunc func(ctx context.Context, r Reminder, late bool) error
+// FireFunc delivers r. Errors other than ErrGone are logged; the reminder then
+// moves on as if sent (a one-off is deleted), so nothing piles up.
+type FireFunc func(ctx context.Context, r Reminder, f Firing) error
+
+// Firing says how a reminder is being sent.
+type Firing struct {
+	// Late: it came due while the bot was off (before Run started), so it's
+	// sent after its time. A reminder merely delayed behind others while the
+	// bot runs isn't late.
+	Late bool
+	// Last: a repeat with an end won't come again after this one.
+	Last bool
+}
 
 // DefaultLateLimit is how late a reminder may still be sent (after the bot
 // was down); later, a one-off is dropped and a repeat skips to its next time.
@@ -146,7 +153,7 @@ func (s *Scheduler) step(ctx context.Context) (time.Duration, error) {
 	return 0, nil
 }
 
-// handle sends r (or skips it if too late) and moves it on. An error means
+// handle sends r (or skips it if too late, or missed past its end) and moves it on. An error means
 // the store couldn't record that.
 func (s *Scheduler) handle(ctx context.Context, r Reminder, now time.Time) error {
 	log := s.logger().With("reminder", r.ID, "user", r.UserID, "guild", r.GuildID, "channel", r.ChannelID)
@@ -161,7 +168,16 @@ func (s *Scheduler) handle(ctx context.Context, r Reminder, now time.Time) error
 		return s.moveOn(ctx, r, now)
 	}
 	late := r.Next.Before(s.started)
-	err := s.Fire(ctx, r, late)
+	if late && !r.Until.IsZero() && now.After(r.Until) {
+		// Missed while the bot was off, and its end has passed: the user chose
+		// to stop by then, so it's dropped rather than sent late (the author's
+		// call). A reminder merely handled a moment after its end still goes.
+		s.dropped.Add(1)
+		log.Info("remind: missed while offline and past its end; dropped", "overdue", overdue.Round(time.Second))
+		return s.moveOn(ctx, r, now)
+	}
+	_, last := r.after(now)
+	err := s.Fire(ctx, r, Firing{Late: late, Last: last && !r.Rule.Once()})
 	gone := false
 	switch {
 	case ctx.Err() != nil:
@@ -178,7 +194,7 @@ func (s *Scheduler) handle(ctx context.Context, r Reminder, now time.Time) error
 		if late {
 			s.late.Add(1)
 		}
-		log.Info("remind: sent", "late", late, "repeats", !r.Rule.Once())
+		log.Info("remind: sent", "late", late, "repeats", !r.Rule.Once(), "last", last && !r.Rule.Once())
 	}
 	if err := s.record(ctx, r, now, gone); err != nil {
 		s.unrecorded[r.ID] = unrecorded{next: r.Next, gone: gone}
@@ -187,14 +203,15 @@ func (s *Scheduler) handle(ctx context.Context, r Reminder, now time.Time) error
 	return nil
 }
 
-// record deletes a handled reminder that's gone or a one-off, and moves a
-// repeat to its next time after now.
+// record deletes a handled reminder that's gone, a one-off, or a repeat past
+// its end, and moves any other repeat to its next time after now.
 func (s *Scheduler) record(ctx context.Context, r Reminder, now time.Time, gone bool) error {
-	if gone || r.Rule.Once() {
+	next, last := r.after(now)
+	if gone || last {
 		_, err := s.Store.DeleteReminder(ctx, r.ID)
 		return err
 	}
-	return s.Store.RescheduleReminder(ctx, r.ID, r.Rule.Next(r.Next, now, r.location()))
+	return s.Store.RescheduleReminder(ctx, r.ID, next)
 }
 
 // moveOn records a reminder that was skipped, not sent.
