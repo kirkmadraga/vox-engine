@@ -257,7 +257,8 @@ func (c RemindMe) logger() *slog.Logger {
 }
 
 // RemindFirer sends a due reminder (it's the scheduler's remind.FireFunc):
-//   - Its owner must still have remindme in that server, or it's gone.
+//   - Its owner must still have remindme in that server, and still see the
+//     channel (Reachable), or it's gone: deleted without being sent.
 //   - With ask set up, the ask grant and allowance left, the model words it
 //     (charged 1, like a plain answer); otherwise, or if that fails, it's the
 //     owner's own text. remindme alone never costs anything.
@@ -267,10 +268,15 @@ func (c RemindMe) logger() *slog.Logger {
 //     permission is just a failed send: a repeat tries again next time.
 type RemindFirer struct {
 	Allowed func(ctx context.Context, user, guild snowflake.ID, command string) bool
-	Ask     *Ask // nil = ask is off: always the owner's text
-	Send    func(ctx context.Context, channelID snowflake.ID, r Reply) error
-	Gone    func(error) bool // the channel was deleted
-	Logger  *slog.Logger
+	// Reachable says whether the owner can still see the channel: it exists,
+	// they're in the server and may view it. A sure no makes the reminder gone
+	// (deleted, never sent), owners included; an error (Discord couldn't say)
+	// sends it anyway. nil = not checked.
+	Reachable func(ctx context.Context, user, guild, channel snowflake.ID) (bool, error)
+	Ask       *Ask // nil = ask is off: always the owner's text
+	Send      func(ctx context.Context, channelID snowflake.ID, r Reply) error
+	Gone      func(error) bool // the channel was deleted
+	Logger    *slog.Logger
 
 	worded, plain atomic.Int64
 }
@@ -287,6 +293,14 @@ func (f *RemindFirer) Stats() FireStats {
 func (f *RemindFirer) Fire(ctx context.Context, r remind.Reminder, how remind.Firing) error {
 	if !f.Allowed(ctx, r.UserID, r.GuildID, RemindCommand) {
 		return fmt.Errorf("%w: no remindme access", remind.ErrGone)
+	}
+	if f.Reachable != nil {
+		switch ok, err := f.Reachable(ctx, r.UserID, r.GuildID, r.ChannelID); {
+		case err != nil:
+			f.logger().Warn("remindme: couldn't check that its owner can still see the channel; sending anyway", "reminder", r.ID, "err", err)
+		case !ok:
+			return fmt.Errorf("%w: its owner left the server, or can't see the channel, or it's deleted", remind.ErrGone)
+		}
 	}
 	text, worded := r.Text, false
 	if f.Ask != nil && f.Allowed(ctx, r.UserID, r.GuildID, AskCommand) {

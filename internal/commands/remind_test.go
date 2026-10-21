@@ -204,6 +204,59 @@ func (e *firerEnv) fire(t *testing.T, late bool) error {
 	return e.f.Fire(context.Background(), reminder, remind.Firing{Late: late})
 }
 
+// The firer checks that its owner can still see the channel before anything
+// else: a sure no makes the reminder gone without a send (or the model being
+// asked), for owners too; Discord not answering sends it as before.
+func TestFirerChecksItsOwnerCanStillSeeTheChannel(t *testing.T) {
+	type call struct{ user, guild, channel snowflake.ID }
+	for _, c := range []struct {
+		name     string
+		ok       bool
+		err      error
+		owner    bool // the remindme check passes as for an owner (no grant needed)
+		wantGone bool
+	}{
+		{"can see it", true, nil, false, false},
+		{"kicked, or can't see the channel", false, nil, false, true},
+		{"an owner who can't see it", false, nil, true, true},
+		{"Discord couldn't say", false, errors.New("502"), false, false},
+	} {
+		e := newFirer(true)
+		if c.owner {
+			e.allowed = map[string]bool{RemindCommand: true} // owners pass Allowed for every command
+		}
+		var calls []call
+		e.f.Reachable = func(_ context.Context, user, guild, channel snowflake.ID) (bool, error) {
+			calls = append(calls, call{user, guild, channel})
+			return c.ok, c.err
+		}
+		err := e.fire(t, false)
+		if gone := errors.Is(err, remind.ErrGone); gone != c.wantGone {
+			t.Errorf("%s: err %v, want gone=%v", c.name, err, c.wantGone)
+		}
+		if len(calls) != 1 || calls[0] != (call{8, 100, 5}) {
+			t.Errorf("%s: checked %v, want once for its owner, server and channel", c.name, calls)
+		}
+		switch {
+		case c.wantGone && (len(e.sent) != 0 || len(e.llm.got) != 0):
+			t.Errorf("%s: sent %v, model asked %d times; want neither", c.name, e.sent, len(e.llm.got))
+		case !c.wantGone && len(e.sent) != 1:
+			t.Errorf("%s: sent %v, want it sent", c.name, e.sent)
+		}
+	}
+	// No remindme access: gone before Discord is even asked.
+	e := newFirer(false)
+	e.allowed[RemindCommand] = false
+	asked := false
+	e.f.Reachable = func(context.Context, snowflake.ID, snowflake.ID, snowflake.ID) (bool, error) {
+		asked = true
+		return true, nil
+	}
+	if err := e.fire(t, false); !errors.Is(err, remind.ErrGone) || asked {
+		t.Errorf("no access: %v, Discord asked %v", err, asked)
+	}
+}
+
 // The last time a repeat with an end fires says so, after the text (the
 // model's words or the owner's), before any late note.
 func TestFirerMarksTheLastOne(t *testing.T) {

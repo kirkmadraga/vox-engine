@@ -260,7 +260,10 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 
 	// Reminders: saved in the database, fired by the scheduler (started once
 	// the gateway is open, so sends work).
-	firer := &commands.RemindFirer{Allowed: policy.Allowed, Send: discordio.SendTo(client.Rest), Gone: discordio.ChannelGone, Logger: logger}
+	// Before each send it checks that its owner can still see the channel
+	// (kicked, lost the channel, or it's deleted: deleted unsent, owners too).
+	firer := &commands.RemindFirer{Allowed: policy.Allowed, Reachable: discordio.Reachable(client.Rest),
+		Send: discordio.SendTo(client.Rest), Gone: discordio.ChannelGone, Logger: logger}
 	scheduler := &remind.Scheduler{Store: db, Fire: firer.Fire, Logger: logger}
 
 	// Allow validates command names against the registry it is part of.

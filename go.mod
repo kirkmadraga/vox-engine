@@ -2,6 +2,8 @@ module github.com/kirkmadraga/vox-engine
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/godave v0.2.0

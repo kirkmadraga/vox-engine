@@ -15,6 +15,66 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/remind/remindtest"
 )
 
+// Someone kicked from the server (or who can't see the channel any more):
+// their repeating reminder is deleted when it falls due, and nothing is sent,
+// while another person's in the same channel still goes.
+func TestE2ERemindersOfSomeoneWhoLeftAreDeletedUnsent(t *testing.T) {
+	zone := time.FixedZone("UTC+8", 8*3600)
+	var mu sync.Mutex
+	clock := time.Date(2026, 10, 7, 14, 0, 0, 0, zone)
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	store := &remindtest.Memory{}
+	e := newE2E(t, commands.RemindMe{Store: store, Location: zone, Now: now})
+	e.send(e2eOwner, allowedG, "allow guild")
+	e.send(e2eOwner, allowedG, "allow everyone remindme")
+	e.send(e2eFriend, allowedG, "remindme every 1h stretch")
+	e.send(e2eStranger, allowedG, "remindme every 1h drink water")
+	if n := len(store.All()); n != 2 {
+		t.Fatalf("set %d reminders, want 2", n)
+	}
+
+	var sent []string
+	kicked := map[snowflake.ID]bool{e2eFriend: true}
+	firer := &commands.RemindFirer{
+		Allowed: func(context.Context, snowflake.ID, snowflake.ID, string) bool { return true },
+		Reachable: func(_ context.Context, user, _, _ snowflake.ID) (bool, error) {
+			return !kicked[user], nil
+		},
+		Send: func(_ context.Context, _ snowflake.ID, r commands.Reply) error {
+			mu.Lock()
+			sent = append(sent, r.Content)
+			mu.Unlock()
+			return nil
+		},
+		Gone: func(error) bool { return false },
+	}
+	ticks, waits := make(chan time.Time), make(chan time.Duration, 10)
+	s := &remind.Scheduler{Store: store, Fire: firer.Fire, Now: now,
+		After: func(d time.Duration) <-chan time.Time { waits <- d; return ticks }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	<-waits
+	mu.Lock()
+	clock = clock.Add(time.Hour)
+	mu.Unlock()
+	ticks <- time.Time{}
+	<-waits
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 || sent[0] != "<@9> drink water" {
+		t.Errorf("sent %q; want only the stranger's, nothing to the kicked friend", sent)
+	}
+	if rs := store.All(); len(rs) != 1 || rs[0].UserID != e2eStranger {
+		t.Errorf("left %+v; want only the stranger's reminder", rs)
+	}
+	if st := s.Stats(); st.Gone != 1 || st.Fired != 1 {
+		t.Errorf("stats %+v; want 1 gone, 1 sent", st)
+	}
+}
+
 // A repeat with an end, from setting it to its last ping: set through the
 // router, listed, fired by the real scheduler and firer on a fake clock,
 // marked "(last one)", then gone.

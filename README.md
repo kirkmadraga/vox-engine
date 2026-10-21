@@ -45,7 +45,9 @@ Use a slash command (`/play`) or mention the bot (`@Bot play`); both work the sa
 Owners (from `config.yaml`) can use everything, everywhere. Everyone else gets a
 command if it's public, or, in an allowed server, if it's open to everyone there
 or granted to them. The bot stays silent to anyone not allowed. Taking
-`remindme` away deletes the reminders that went with it.
+`remindme` away deletes the reminders that went with it, and so does leaving
+the server or losing sight of the channel (or the channel being deleted):
+those reminders are never sent.
 
 ## Running it
 
@@ -53,8 +55,10 @@ or granted to them. The bot stays silent to anyone not allowed. Taking
 
 To build:
 
-- **Go 1.26+.** No C toolchain: the build is pure Go (`CGO_ENABLED=0`), and the
-  binary runs on any x86-64 CPU.
+- **Go 1.26+, with 1.27.3+ recommended:** it fixes a certificate security
+  hole. Go fetches 1.27.3 itself unless `GOTOOLCHAIN=local` is set. No C
+  toolchain: the build is pure Go (`CGO_ENABLED=0`), and the binary runs on
+  any x86-64 CPU.
 
 On the machine that runs the bot (found on `PATH`, or set in `config.yaml`):
 
