@@ -78,10 +78,11 @@ func SlashCommands(grantable []string, ask, askSearch bool) []discord.Applicatio
 		simple("ping", "Check that the bot is listening"),
 		discord.SlashCommandCreate{
 			Name:        "play",
-			Description: "Play a YouTube or Spotify link, search YouTube, or pick a search result by number",
+			Description: "Play a YouTube or Spotify link, a file, search YouTube, or pick a search result by number",
 			Contexts:    guildOnly,
 			Options: []discord.ApplicationCommandOption{
-				discord.ApplicationCommandOptionString{Name: "query", Description: "YouTube link, Spotify link, search term, or search result number", Required: true},
+				discord.ApplicationCommandOptionString{Name: "query", Description: "YouTube link, Spotify link, link to a file, search term, or search result number"},
+				discord.ApplicationCommandOptionAttachment{Name: "file", Description: "An audio or video file to play"},
 				discord.ApplicationCommandOptionBool{Name: "lucky", Description: "For a search term: play the first good result instead of listing them"},
 			},
 		},
@@ -303,6 +304,9 @@ func handleSlash(base context.Context, r *router.Router, responder InteractionRe
 	switch inv.Name {
 	case "play":
 		inv.Lucky, _ = data.OptBool("lucky")
+		if a, ok := data.OptAttachment("file"); ok {
+			inv.Files = []commands.File{file(a)} // even an image: play then says it isn't audio or video
+		}
 	case commands.AskCommand:
 		inv.Search, _ = data.OptBool("search")
 	case commands.RemindCommand:

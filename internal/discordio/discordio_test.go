@@ -229,6 +229,32 @@ func TestImagesKeepsOnlyImagesInOrder(t *testing.T) {
 	}
 }
 
+func TestFiles(t *testing.T) {
+	ct := func(s string) *string { return &s }
+	got := files([]discord.Attachment{
+		{URL: "a", Filename: "a.mp3", ContentType: ct("audio/mpeg"), Size: 5},
+		{URL: "b", Filename: "b.png", ContentType: ct("image/png")}, // images are ask's
+		{URL: "c", Filename: "c.flac"},                              // no type: kept, play judges by name
+		{URL: "d", Filename: "d.txt", ContentType: ct("text/plain")},
+	})
+	if len(got) != 3 || got[0] != (commands.File{URL: "a", Name: "a.mp3", ContentType: "audio/mpeg", Size: 5}) ||
+		got[1].URL != "c" || got[1].ContentType != "" || got[2].URL != "d" {
+		t.Errorf("files = %+v", got)
+	}
+}
+
+// A replied-to message with only a file (no text) is still quoted: play uses it.
+func TestQuotedFileOnly(t *testing.T) {
+	id := snowflake.ID(42)
+	ct := "audio/ogg"
+	ref := &discord.Message{ID: 42, Author: discord.User{Username: "user1"},
+		Attachments: []discord.Attachment{{URL: "x", Filename: "voice-message.ogg", ContentType: &ct}}}
+	reply := discord.Message{Type: discord.MessageTypeReply, MessageReference: &discord.MessageReference{MessageID: &id}, ReferencedMessage: ref}
+	if q := quoted(reply); q == nil || len(q.Files) != 1 || q.Files[0].Name != "voice-message.ogg" {
+		t.Fatalf("quoted = %+v", q)
+	}
+}
+
 func TestQuoted(t *testing.T) {
 	id := snowflake.ID(42)
 	ct := "image/png"

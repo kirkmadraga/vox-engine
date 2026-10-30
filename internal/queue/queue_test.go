@@ -180,13 +180,14 @@ func TestPlaysInOrderThenLeaves(t *testing.T) {
 		}
 	}
 	close(gate)
-	h.rec.waitFor(t, "leave")
+	h.rec.waitFor(t, "msg 7: Nothing's queued")
 	want := []string{
 		"join 1/100",
 		"msg 7: Now playing: **one** (3:05), requested by <@42>.",
 		"msg 7: Now playing: **two** (3:05), requested by <@42>.",
 		"msg 7: Now playing: **three** (3:05), requested by <@42>.",
 		"leave 100",
+		"msg 7: Nothing's queued, so I left voice.",
 	}
 	if got := h.rec.all(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -546,4 +547,14 @@ func TestEnqueuedTitleWins(t *testing.T) {
 	h.rec.waitFor(t, "msg 7: Now playing: **Radiohead – Black Star** (3:05)")
 	h.m.Enqueue(1, track("y", 100, load("Loaded title", nil, nil)))
 	h.rec.waitFor(t, "msg 7: Now playing: **Loaded title** (3:05)")
+}
+
+// Attachments have no link to log (theirs are signed), so their key stands in.
+func TestTrackLogID(t *testing.T) {
+	if got := (Track{URL: "https://example.com/a.mp3", Key: "k"}).logID(); got != "https://example.com/a.mp3" {
+		t.Errorf("with a link: %q", got)
+	}
+	if got := (Track{Key: "file-1"}).logID(); got != "file-1" {
+		t.Errorf("without a link: %q", got)
+	}
 }

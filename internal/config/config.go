@@ -22,6 +22,7 @@ import (
 const (
 	DefaultMaxQueueLength   = 10
 	DefaultCacheMaxBytes    = 512 << 20 // 512 MiB
+	DefaultMaxFileBytes     = 50 << 20  // 50 MiB
 	DefaultCacheMaxAge      = 12 * time.Hour
 	DefaultTestTone         = "assets/tone.opus" // committed with the code
 	DefaultYtdlpMinInterval = 30 * time.Second
@@ -143,6 +144,7 @@ type Config struct {
 	Database              string        // SQLite file: access lists and cache index
 	CacheMaxBytes         int64         // 0 = no size cap
 	CacheMaxAge           time.Duration // since last played; 0 = never expire
+	MaxFileBytes          int64         // largest file play takes (attachments and file links)
 	TestTone              string        // Ogg Opus file played by "test"
 	MaxConcurrentJobs     int
 	MaxQueueLength        int           // per server, including the playing track
@@ -200,6 +202,7 @@ type file struct {
 	Database              string   `yaml:"database"`
 	CacheMaxBytes         *int64   `yaml:"cache_max_bytes"`
 	CacheMaxAge           *string  `yaml:"cache_max_age"`
+	MaxFileBytes          *int64   `yaml:"max_file_bytes"`
 	TestTone              string   `yaml:"test_tone"`
 	MaxConcurrentJobs     *int     `yaml:"max_concurrent_jobs"`
 	MaxQueueLength        *int     `yaml:"max_queue_length"`
@@ -300,6 +303,7 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		Database:              valueOr(f.Database, "data/bot.db"),
 		CacheMaxBytes:         DefaultCacheMaxBytes,
 		CacheMaxAge:           DefaultCacheMaxAge,
+		MaxFileBytes:          DefaultMaxFileBytes,
 		TestTone:              valueOr(f.TestTone, DefaultTestTone),
 		MaxConcurrentJobs:     1,
 		MaxQueueLength:        DefaultMaxQueueLength,
@@ -453,6 +457,12 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("cache_max_bytes must be 0 (no cap) or positive, got %d", *f.CacheMaxBytes)
 		}
 		cfg.CacheMaxBytes = *f.CacheMaxBytes
+	}
+	if f.MaxFileBytes != nil {
+		if *f.MaxFileBytes <= 0 {
+			return Config{}, fmt.Errorf("max_file_bytes must be positive, got %d", *f.MaxFileBytes)
+		}
+		cfg.MaxFileBytes = *f.MaxFileBytes
 	}
 	if f.CacheMaxAge != nil {
 		d, err := time.ParseDuration(strings.TrimSpace(*f.CacheMaxAge))

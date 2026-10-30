@@ -9,6 +9,7 @@ import (
 
 	"github.com/disgoorg/snowflake/v2"
 
+	"github.com/kirkmadraga/vox-engine/internal/mediafile"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
 	"github.com/kirkmadraga/vox-engine/internal/spotify"
 	"github.com/kirkmadraga/vox-engine/internal/titles"
@@ -31,10 +32,12 @@ type Queue interface {
 	List(guildID snowflake.ID) queue.Listing
 }
 
-// Play is "@Bot play <YouTube link | Spotify track link | search words | number>".
-// YouTube links are played directly; Spotify tracks are matched to a YouTube
-// video (see playSpotify). Search words list the top YouTube results,
-// remembered for the caller; "play <number>" then queues one of them.
+// Play is "@Bot play <YouTube link | Spotify track link | file link | search
+// words | number>", or "@Bot play" with audio or video files attached (or as
+// a reply to a message with some). YouTube links are played directly; Spotify
+// tracks are matched to a YouTube video (see playSpotify). Other links must
+// lead straight to a file (see playLink). Search words list the top YouTube
+// results, remembered for the caller; "play <number>" then queues one of them.
 type Play struct {
 	Voice       VoiceLocator
 	Queue       Queue
@@ -45,13 +48,39 @@ type Play struct {
 	Spotify     func(ctx context.Context, trackID string) (spotify.Track, error)    // Spotify track details; nil = no Spotify links
 	SearchMusic func(ctx context.Context, query string, n int) ([]ytdlp.Hit, error) // YouTube Music songs; nil = skip that step
 	Logger      *slog.Logger                                                        // optional: how Spotify tracks were matched
+	// File loads an attached file or a direct link to one; nil = neither is
+	// played. MaxFileBytes refuses attachments known to be too big up front.
+	File         func(key string, src mediafile.Source) queue.LoadFunc
+	MaxFileBytes int64
+}
+
+func (c Play) usage(req Request) string {
+	if c.File != nil && req.MessageID == 0 { // Discord doesn't pass slash commands what's attached to the message box
+		return "Usage: `/play <YouTube link, link to a file, or search words>`, then `/play <number>` to pick a result. To play a file, choose `/play`'s `file` option; files attached to the message box don't reach slash commands."
+	}
+	if c.File != nil {
+		return "Usage: `play <YouTube link, link to a file, or search words>`, then `play <number>` to pick a result. Or attach audio or video files to `play`."
+	}
+	return "Usage: `play <YouTube link or search words>`, then `play <number>` to pick a result"
 }
 
 func (Play) Name() string { return "play" }
 
 func (c Play) Run(ctx context.Context, req Request) error {
+	if c.File != nil {
+		files, attached := mediaFiles(req)
+		// /play's file option was chosen on purpose, so it's never ignored;
+		// a mention's stray attachment next to search words is.
+		slashFile := req.MessageID == 0 && len(req.Files) > 0
+		switch {
+		case len(files) > 0:
+			return c.playAttachments(ctx, req, files)
+		case attached && (req.Args == "" || slashFile):
+			return reply(ctx, req, "That isn't an audio or video file.")
+		}
+	}
 	if req.Args == "" {
-		return reply(ctx, req, "Usage: `play <YouTube link or search words>`, then `play <number>` to pick a result")
+		return reply(ctx, req, "%s", c.usage(req))
 	}
 	if n, ok := parsePick(req.Args); ok {
 		return c.pick(ctx, req, n)
@@ -64,6 +93,8 @@ func (c Play) Run(ctx context.Context, req Request) error {
 		return reply(ctx, req, "Playlists aren't supported, only single videos.")
 	case spotify.IsLink(req.Args) && c.Spotify != nil && c.Search != nil && c.Recent != nil:
 		return c.playSpotify(ctx, req)
+	case c.File != nil && ytdlp.LooksLikeLink(req.Args) && !spotify.IsLink(req.Args) && !ytdlp.IsYouTubeLink(req.Args):
+		return c.playLink(ctx, req) // a direct link to a file
 	case ytdlp.LooksLikeLink(req.Args), spotify.IsLink(req.Args), c.Search == nil, c.Recent == nil:
 		return reply(ctx, req, "That doesn't look like a YouTube video link.")
 	}

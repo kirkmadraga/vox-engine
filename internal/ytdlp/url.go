@@ -36,6 +36,27 @@ func LooksLikeLink(raw string) bool {
 	return !strings.ContainsFunc(s, unicode.IsSpace) && strings.Contains(s, ".") && strings.Contains(s, "/")
 }
 
+// IsYouTubeLink reports whether raw links to any YouTube page (a video or
+// not), so play can tell it apart from a link to a file.
+func IsYouTubeLink(raw string) bool {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "<"), ">")
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	for _, d := range []string{"youtube.com", "youtu.be", "youtube-nocookie.com"} {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseVideoID extracts the video ID from a YouTube link. Accepted forms:
 // youtu.be/<id>, youtube.com/watch?v=<id>, youtube.com/shorts/<id>, on the
 // www, m and music subdomains, with or without a scheme, and wrapped in <...>

@@ -53,6 +53,7 @@ func GuildMessageHandler(base context.Context, r *router.Router, sender MessageS
 			ReplyToID:  repliedTo(e.Message),
 			Mentions:   mentionIDs(e.Message),
 			Images:     images(e.Message.Attachments),
+			Files:      files(e.Message.Attachments),
 			Quoted:     quoted(e.Message),
 			MessageID:  e.MessageID,
 			Content:    e.Message.Content,
@@ -81,6 +82,25 @@ func images(atts []discord.Attachment) []commands.Image {
 	return out
 }
 
+// files keeps the attachments that aren't images, in order.
+func files(atts []discord.Attachment) []commands.File {
+	var out []commands.File
+	for _, a := range atts {
+		if f := file(a); !strings.HasPrefix(f.ContentType, "image/") {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func file(a discord.Attachment) commands.File {
+	f := commands.File{URL: a.URL, Name: a.Filename, Size: int64(a.Size)}
+	if a.ContentType != nil {
+		f.ContentType = *a.ContentType
+	}
+	return f
+}
+
 // quoted is the message m replies to, if Discord included it. Without the
 // Message Content intent, other people's messages arrive blank, so nil then.
 func quoted(m discord.Message) *commands.Quote {
@@ -91,8 +111,9 @@ func quoted(m discord.Message) *commands.Quote {
 	q := &commands.Quote{
 		MessageID: ref.ID, AuthorID: ref.Author.ID, AuthorName: displayName(*ref), AuthorBot: ref.Author.Bot,
 		IsReply: ref.Type == discord.MessageTypeReply, Content: ref.Content, Images: images(ref.Attachments),
+		Files: files(ref.Attachments),
 	}
-	if q.Content == "" && len(q.Images) == 0 {
+	if q.Content == "" && len(q.Images) == 0 && len(q.Files) == 0 {
 		return nil
 	}
 	return q

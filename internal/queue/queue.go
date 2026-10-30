@@ -44,6 +44,15 @@ type Track struct {
 	Load         LoadFunc
 }
 
+// logID names the track in logs: its link, or its key when it has none
+// (attachments, whose signed links are never logged).
+func (t Track) logID() string {
+	if t.URL != "" {
+		return t.URL
+	}
+	return t.Key
+}
+
 // Name is the track's display name, safe to put in a Discord message.
 func (t Track) Name() string {
 	switch {
@@ -309,7 +318,7 @@ func (m *Manager) load(guildID snowflake.ID, it *item) {
 	m.mu.Unlock()
 
 	if removed {
-		m.logger.Warn("queue: track failed to load", "guild", guildID, "track", it.URL, "err", err)
+		m.logger.Warn("queue: track failed to load", "guild", guildID, "track", it.logID(), "err", err)
 		m.notify(it.TextChannel, fmt.Sprintf("Couldn't add %s: %s", name, UserMessage(err)))
 	}
 }
@@ -364,9 +373,12 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 	m.mu.Lock()
 	m.active[guildID] = true
 	m.mu.Unlock()
+	var lastChannel, leftFrom snowflake.ID // leftFrom: where to say the bot left because nothing was queued
 	defer func() {
 		s.leave()
 		<-m.slot
+		// After leaving, so a new request can't find this session still in voice.
+		m.notify(leftFrom, "Nothing's queued, so I left voice.")
 	}()
 
 	idled := false // already stayed idle since the last track; next empty queue means leave
@@ -388,6 +400,10 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 		if len(g.pending) == 0 || m.base.Err() != nil {
 			// Decided under the lock, so a concurrent Enqueue either lands before
 			// this check or sees running=false and starts a new worker.
+			// Stop and being disconnected say so themselves.
+			if s.conn != nil && !g.leaveNow && m.base.Err() == nil {
+				leftFrom = lastChannel
+			}
 			g.running, g.pending, g.leaveNow = false, nil, false
 			delete(m.active, guildID)
 			m.mu.Unlock()
@@ -401,12 +417,18 @@ func (m *Manager) worker(guildID snowflake.ID, g *guildQueue) {
 		g.current = it
 		m.mu.Unlock()
 
-		s.play(ctx, it)
+		lastChannel = it.TextChannel
+		failed := s.play(ctx, it)
 		cancel()
 
 		m.mu.Lock()
 		g.current = nil
+		// Only when about to wait; leaving at once has its own message.
+		ranOut := len(g.pending) == 0 && !failed && s.canIdle()
 		m.mu.Unlock()
+		if ranOut {
+			m.notify(it.TextChannel, "The queue is empty.")
+		}
 	}
 }
 
@@ -472,13 +494,14 @@ func (s *session) idleWait() {
 	}
 }
 
-// play waits for one track to load, joins its voice channel if needed, and plays it.
-func (s *session) play(ctx context.Context, it *item) {
+// play waits for one track to load, joins its voice channel if needed, and
+// plays it. It reports whether it told the channel the track failed.
+func (s *session) play(ctx context.Context, it *item) (failed bool) {
 	m, log := s.m, s.log
 	select {
 	case <-it.done:
 	case <-ctx.Done():
-		return // skipped or stopped while still loading
+		return false // skipped or stopped while still loading
 	}
 	m.mu.Lock()
 	loaded, err, name := it.loaded, it.err, it.Name()
@@ -486,10 +509,11 @@ func (s *session) play(ctx context.Context, it *item) {
 	m.mu.Unlock()
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Warn("queue: track failed to load", "track", it.URL, "err", err)
+			log.Warn("queue: track failed to load", "track", it.logID(), "err", err)
 			m.notify(it.TextChannel, fmt.Sprintf("Couldn't play %s: %s", name, UserMessage(err)))
+			return true
 		}
-		return
+		return false
 	}
 
 	if s.conn == nil || s.channel != it.VoiceChannel {
@@ -503,8 +527,9 @@ func (s *session) play(ctx context.Context, it *item) {
 					msg = "Voice encryption (DAVE) didn't finish setting up, so I skipped %s."
 				}
 				m.notify(it.TextChannel, fmt.Sprintf(msg, name))
+				return true
 			}
-			return
+			return false
 		}
 		s.conn, s.channel = c, it.VoiceChannel
 		m.mu.Lock()
@@ -521,11 +546,13 @@ func (s *session) play(ctx context.Context, it *item) {
 	it.started = time.Now()
 	m.mu.Unlock()
 	frames, err := voice.PlayFile(ctx, m.clock, s.conn, loaded.Path)
-	log.Info("queue: track finished", "track", it.URL, "frames", frames, "err", err)
+	log.Info("queue: track finished", "track", it.logID(), "frames", frames, "err", err)
 	if err != nil && ctx.Err() == nil {
 		m.notify(it.TextChannel, fmt.Sprintf("Playback of %s failed. Details are in the bot's log.", name))
 		s.leave() // the connection may be broken; rejoin for the next track
+		return true
 	}
+	return false
 }
 
 // Disconnected tells the queue the bot was removed from voice in guildID by
@@ -572,7 +599,7 @@ func (m *Manager) Stop(guildID snowflake.ID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.guilds[guildID]
-	if g == nil || (g.current == nil && len(g.pending) == 0 && !g.idle) {
+	if g == nil || !g.running {
 		return false
 	}
 	g.pending, g.leaveNow = nil, true // no idle wait: stop means leave

@@ -12,7 +12,8 @@ cache_dir: ./cache            # audio is fetched once with yt-dlp, checked, and 
 database: ./data/bot.db       # SQLite: access lists and the audio cache index
 cache_max_bytes: 536870912    # 512 MB total audio; least recently played goes first (0 = no cap)
 cache_max_age: 12h            # delete audio not played for this long (0 = never)
-max_duration_seconds: 0       # 0 = no limit
+max_duration_seconds: 0       # 0 = no limit (YouTube and files)
+max_file_bytes: 52428800      # 50 MB: largest file "play" takes, attached or linked
 max_queue_length: 10          # tracks per server, including the one playing
 search_results: 10            # results listed by "@Bot play <search words>" (1-10)
 max_voice_sessions: 1         # servers the bot plays in at the same time; others wait for a slot
@@ -99,6 +100,8 @@ llm_system_prompt: |
   - /play <YouTube link> or <Spotify track link>: queue that song
   - /play <search words>: lists the top results; then /play <number> picks one
   - /play with lucky set to true: plays the first good search result directly
+  - /play with a file, or a link straight to an audio or video file: plays that file
+    ("@Vox Engine play" with up to 5 files attached, or as a reply to a message with files)
   - /queue shows what's up next, /skip skips the song, /stop clears the queue and leaves
   Each also works as @Vox Engine <command>, e.g. "@Vox Engine play <song>".
   If a command doesn't respond for someone, they may not have access; the bot's
@@ -137,11 +140,11 @@ llm_weight_image: 4
 # reminder_timezone: Europe/Berlin
 
 # Discord's "Message Content Intent" lets the bot read the message someone
-# replies to when they ask it (e.g. reply to a meme with "@Bot explain this").
-# Only ask uses it; music and every other command work without it, so leave it
-# off unless you run ask and want that. With it on, the bot receives the text
-# of every message in channels it can see; it only acts on and remembers
-# messages addressed to it, and logs none of them.
+# replies to: ask can include it (e.g. reply to a meme with "@Bot explain this"),
+# and "@Bot play" as a reply can play someone else's attached files. Everything
+# else works without it, so leave it off unless you want those. With it on,
+# the bot receives the text of every message in channels it can see; it only
+# acts on and remembers messages addressed to it, and logs none of them.
 # To turn it on: first enable Developer Portal > your app > Bot > Privileged
 # Gateway Intents > Message Content Intent, then set this to true. If this is
 # true while the portal switch is off, Discord refuses the connection and the

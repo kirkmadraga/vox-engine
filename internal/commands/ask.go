@@ -143,6 +143,9 @@ func (c *Ask) quote(req Request) *Quote {
 	if q == nil || c.Memory.Has(req.ChannelID, q.MessageID) {
 		return nil
 	}
+	if q.Content == "" && len(q.Images) == 0 {
+		return nil // only files (quoted for play): nothing the model can read
+	}
 	return q
 }
 

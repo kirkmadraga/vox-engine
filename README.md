@@ -11,7 +11,7 @@
 ## ✨ Features
 
 - 🎵 **Music.** Play YouTube and Spotify links in voice, or search YouTube and
-  pick a result. Queue, skip, stop.
+  pick a result. Play audio and video files too. Queue, skip, stop.
 - ⏰ **Reminders.** One-off or repeating, pinging you in the channel where you set
   them.
 - 🤖 **Ask.** Chat with a language model (xAI's Grok or OpenAI). It remembers the
@@ -30,6 +30,7 @@ Use a slash command (`/play`) or mention the bot (`@Bot play`); both work the sa
 | `ping` | Replies "@you pong" | Anyone, in allowed servers |
 | `play <YouTube or Spotify link>` | Adds the track to this server's queue and joins your voice channel (Spotify: single tracks only, for now) | Granted users |
 | `play <search words>` | Lists the top YouTube results | Granted users |
+| `@Bot play` with files attached, `/play` with its `file` option, or `play <link to a file>` | Plays audio or video files (up to 5 at once with `@Bot play`, which also works as a reply to a message with files) | Granted users |
 | `play <number>` | Queues that result from your last search (within 5 minutes) | Granted users |
 | `queue` / `skip` / `stop` | List the queue, skip the current track, clear it and leave | Same as `play` |
 | `test` | Plays a short test tone | Same as `play` |
@@ -111,9 +112,9 @@ scheduled task, a container) is up to you.
 
 ### Optional: Message Content intent
 
-Only `ask` uses it: it lets a question that replies to someone's message (e.g.
-`@Bot explain this` on a meme) include that message's text or image. Music and
-every other command work without it.
+It lets a command see the message it replies to: `ask` can include that
+message's text or image (e.g. `@Bot explain this` on a meme), and `play` can
+play someone else's attached files. Everything else works without it.
 
 1. In the Discord developer portal: your application → **Bot** → **Privileged
    Gateway Intents** → turn on **Message Content Intent** and save.

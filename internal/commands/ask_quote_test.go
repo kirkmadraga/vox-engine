@@ -44,6 +44,17 @@ func TestAskQuotesTheRepliedToMessage(t *testing.T) {
 	}
 }
 
+// A reply to a message with only a file (no text, no image) asks just the question.
+func TestAskIgnoresFileOnlyQuotes(t *testing.T) {
+	llmc := newConvLLM()
+	c := &Ask{LLM: llmc}
+	askWith(t, c, Request{ChannelID: 1, Args: "what song is this?",
+		Quoted: &Quote{MessageID: 50, AuthorName: "user1", Files: []File{{URL: "u", Name: "a.mp3"}}}})
+	if got := llmc.last()[0].Content; got != "what song is this?" {
+		t.Errorf("question sent: %q", got)
+	}
+}
+
 func TestAskDoesntQuoteWhatsAlreadyInTheConversation(t *testing.T) {
 	llmc := newConvLLM()
 	mem := &ChannelMemory{MaxMessages: 10}

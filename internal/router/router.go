@@ -25,6 +25,7 @@ type Message struct {
 	Content    string
 	Mentions   []snowflake.ID   // users the message pings (a reply's @ ping included)
 	Images     []commands.Image // attached images, in order
+	Files      []commands.File  // other attachments, in order
 	Quoted     *commands.Quote  // the replied-to message, when Discord included it
 }
 
@@ -116,7 +117,7 @@ func (r *Router) replyToAnswer(msg Message) bool {
 // don't advertise the bot to unauthorized users.
 func (r *Router) dispatch(ctx context.Context, msg Message, name, args string, reply commands.Replier) {
 	inv := Invocation{GuildID: msg.GuildID, ChannelID: msg.ChannelID, AuthorID: msg.AuthorID, AuthorName: msg.AuthorName,
-		MessageID: msg.MessageID, Name: name, Args: args, Images: msg.Images, Quoted: msg.Quoted}
+		MessageID: msg.MessageID, Name: name, Args: args, Images: msg.Images, Files: msg.Files, Quoted: msg.Quoted}
 	if r.Check(ctx, inv) {
 		r.Run(ctx, inv, reply)
 	}
@@ -135,6 +136,7 @@ type Invocation struct {
 	Search     bool             // /ask's search option (slash only)
 	When       string           // /remindme set's when option (slash only)
 	Images     []commands.Image // the asker's attached images (mentions only)
+	Files      []commands.File  // the asker's other attachments (a mention's, or /play's file)
 	Quoted     *commands.Quote  // the message replied to, if Discord included it
 }
 
@@ -160,7 +162,7 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 		return
 	}
 
-	log.Info("router: dispatch")
+	log.Info("router: dispatch", "slash", inv.MessageID == 0, "files", len(inv.Files))
 	err := cmd.Run(ctx, commands.Request{
 		GuildID:    inv.GuildID,
 		ChannelID:  inv.ChannelID,
@@ -173,6 +175,7 @@ func (r *Router) Run(ctx context.Context, inv Invocation, reply commands.Replier
 		Search:     inv.Search,
 		When:       inv.When,
 		Images:     inv.Images,
+		Files:      inv.Files,
 		Quoted:     inv.Quoted,
 	})
 	if err != nil {

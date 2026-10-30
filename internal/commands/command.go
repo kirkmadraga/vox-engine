@@ -34,6 +34,9 @@ type Request struct {
 	When string
 	// Images are the asker's attached images, in order (mentions only).
 	Images []Image
+	// Files are the asker's other attachments, in order: a mention's, or
+	// /play's file option.
+	Files []File
 	// Quoted is the message this one replies to, when Discord included it
 	// (it needs the Message Content intent for other people's messages).
 	Quoted *Quote
@@ -46,6 +49,15 @@ type Image struct {
 	Size        int
 }
 
+// File is an attachment that isn't an image (audio, video, or anything
+// else). The URL is Discord's, never logged.
+type File struct {
+	URL         string
+	Name        string
+	ContentType string // "" if Discord didn't say
+	Size        int64
+}
+
 // Quote is a message someone replied to when asking.
 type Quote struct {
 	MessageID  snowflake.ID
@@ -56,6 +68,7 @@ type Quote struct {
 	IsReply    bool // the quoted message is itself a Discord reply
 	Content    string
 	Images     []Image
+	Files      []File
 }
 
 // Reply is an outgoing message. Only the users in Mentions are pinged;

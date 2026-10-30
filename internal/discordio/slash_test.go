@@ -130,8 +130,12 @@ func TestSlashCommandsMatchRegistry(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("slash commands %q, registry %q", got, want)
 	}
-	if q := byName["play"].Options[0].(discord.ApplicationCommandOptionString); q.Name != "query" || !q.Required {
-		t.Errorf("/play needs a required query: %+v", q)
+	// Either a query or a file: neither is required (play answers with usage).
+	if q := byName["play"].Options[0].(discord.ApplicationCommandOptionString); q.Name != "query" || q.Required {
+		t.Errorf("/play needs an optional query: %+v", q)
+	}
+	if f, ok := byName["play"].Options[1].(discord.ApplicationCommandOptionAttachment); !ok || f.Name != "file" || f.Required {
+		t.Errorf("/play needs an optional file: %+v", byName["play"].Options[1])
 	}
 	for _, verb := range []string{"allow", "deny"} {
 		user := byName[verb].Options[1].(discord.ApplicationCommandOptionSubCommand)
@@ -235,6 +239,9 @@ func (c recordCmd) Run(ctx context.Context, req commands.Request) error {
 	}
 	if req.When != "" {
 		entry += " [when " + req.When + "]"
+	}
+	for _, f := range req.Files {
+		entry += fmt.Sprintf(" [file %s %s %d %s]", f.Name, f.ContentType, f.Size, f.URL)
 	}
 	*c.log = append(*c.log, entry)
 	for i := range c.replies {
@@ -539,6 +546,25 @@ func TestLuckyOnlyFromTheSlashOption(t *testing.T) {
 	}
 }
 
+// /play's file option reaches play as the request's file, with or without a
+// query; any attachment does (play itself refuses what isn't audio).
+func TestSlashPlayFile(t *testing.T) {
+	e := newSlashE2E(t)
+	att := func(ct string) string {
+		return `"resolved":{"attachments":{"77":{"id":"77","filename":"song.mp3","size":1234,"url":"https://cdn.example/song.mp3","content_type":"` + ct + `"}}}`
+	}
+	for raw, want := range map[string]string{
+		`{"id":"1","name":"play","type":1,"options":[{"name":"file","type":11,"value":"77"}],` + att("audio/mpeg") + `}`:                                      "run play  [file song.mp3 audio/mpeg 1234 https://cdn.example/song.mp3]",
+		`{"id":"1","name":"play","type":1,"options":[{"name":"query","type":3,"value":"x"},{"name":"file","type":11,"value":"77"}],` + att("image/png") + `}`: "run play x [file song.mp3 image/png 1234 https://cdn.example/song.mp3]",
+		`{"id":"1","name":"play","type":1}`: "run play ",
+	} {
+		e.slash(owner, allowedG, raw)
+		if !slices.Contains(e.log, want) {
+			t.Errorf("%s: events %q, want %q", raw, e.log, want)
+		}
+	}
+}
+
 // /ask exists only when an LLM is set up, with a required prompt, and runs the
 // ask command with the prompt as its args.
 func TestSlashAsk(t *testing.T) {
@@ -583,9 +609,9 @@ func TestPlayLuckyOptionIsOptional(t *testing.T) {
 		if s.Name != "play" {
 			continue
 		}
-		lucky, ok := s.Options[1].(discord.ApplicationCommandOptionBool)
+		lucky, ok := s.Options[2].(discord.ApplicationCommandOptionBool)
 		if !ok || lucky.Name != "lucky" || lucky.Required {
-			t.Errorf("/play's second option = %+v; want an optional boolean named lucky", s.Options[1])
+			t.Errorf("/play's third option = %+v; want an optional boolean named lucky", s.Options[2])
 		}
 	}
 }

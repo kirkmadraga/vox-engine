@@ -31,6 +31,7 @@ import (
 	"github.com/kirkmadraga/vox-engine/internal/config"
 	"github.com/kirkmadraga/vox-engine/internal/discordio"
 	"github.com/kirkmadraga/vox-engine/internal/llm"
+	"github.com/kirkmadraga/vox-engine/internal/mediafile"
 	"github.com/kirkmadraga/vox-engine/internal/queue"
 	"github.com/kirkmadraga/vox-engine/internal/remind"
 	"github.com/kirkmadraga/vox-engine/internal/router"
@@ -222,6 +223,27 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 			return queue.Loaded{Path: e.Path, Title: e.Title, Duration: e.Duration, OnStart: func() { audio.MarkPlayed(id) }}, err
 		}
 	}
+	// Attached files and direct links to files: downloaded, converted by
+	// ffmpeg, and kept only while queued or playing.
+	files, err := mediafile.New(mediafile.Options{
+		Dir:         filepath.Join(cfg.CacheDir, "files"),
+		FFmpeg:      downloader.FFmpegLocation,
+		Runner:      ytdlp.ExecRunner{},
+		MaxBytes:    cfg.MaxFileBytes,
+		MaxDuration: time.Duration(cfg.MaxDurationSeconds) * time.Second,
+		// A skipped or stopped file stops downloading or converting at once.
+		Active: func(key string) bool { return q == nil || q.InUse()[key] },
+		Logger: logger,
+	})
+	if err != nil {
+		return err
+	}
+	file := func(key string, src mediafile.Source) queue.LoadFunc {
+		return func(ctx context.Context) (queue.Loaded, error) {
+			r, err := files.Fetch(ctx, key, src)
+			return queue.Loaded{Path: r.Path, Title: r.Title, Duration: r.Duration}, err
+		}
+	}
 	tonePath := cfg.TestTone
 	tone := func(context.Context) (queue.Loaded, error) {
 		if _, err := os.Stat(tonePath); err != nil {
@@ -255,6 +277,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 		IdleTimeout: cfg.VoiceIdleTimeout,
 	})
 	voiceStates := discordio.VoiceStates{Caches: client.Caches}
+	go files.SweepLoop(ctx, q.InUse, 0) // a file is deleted once its track is no longer queued or playing
 
 	recent := commands.NewRecentSearches(0, nil) // per-user results for "play <number>"
 
@@ -275,6 +298,7 @@ func run(ctx context.Context, logger, libLogger *slog.Logger, configPath, envPat
 			Voice: voiceStates, Queue: q, YouTube: youtube,
 			Search: searcher.SearchN, Results: cfg.SearchResults, Recent: recent,
 			Spotify: (&spotify.Client{}).Track, SearchMusic: searcher.SearchMusic, Logger: logger,
+			File: file, MaxFileBytes: cfg.MaxFileBytes,
 		},
 		commands.Test{Voice: voiceStates, Queue: q, Tone: tone},
 		commands.QueueList{Queue: q},

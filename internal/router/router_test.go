@@ -188,3 +188,29 @@ func (fakeChecker) ChannelAllowed(context.Context, snowflake.ID, string, ...snow
 func (f fakeChecker) Allowed(_ context.Context, user, _ snowflake.ID, command string) bool {
 	return slices.Contains(f.owners, user) || slices.Contains(f.public, command)
 }
+
+// captureCmd keeps the request it was run with.
+type captureCmd struct{ got *commands.Request }
+
+func (captureCmd) Name() string { return "play" }
+func (c captureCmd) Run(_ context.Context, req commands.Request) error {
+	*c.got = req
+	return nil
+}
+
+// A mention's attachments, and the replied-to message's, reach the command.
+func TestHandlePassesFiles(t *testing.T) {
+	var got commands.Request
+	reg, err := commands.NewRegistry(captureCmd{got: &got})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(func() snowflake.ID { return self }, reg, fakeChecker{owners: []snowflake.ID{7}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	own := []commands.File{{URL: "u1", Name: "a.mp3", ContentType: "audio/mpeg", Size: 3}}
+	quoted := &commands.Quote{MessageID: 4, Files: []commands.File{{URL: "u2", Name: "b.ogg"}}}
+	r.Handle(context.Background(), Message{AuthorID: 7, Content: "<@1000> play", ReplyToID: 4, Files: own, Quoted: quoted}, &fakeReplier{})
+	if !slices.Equal(got.Files, own) || got.Quoted == nil || !slices.Equal(got.Quoted.Files, quoted.Files) {
+		t.Errorf("request files %+v, quoted %+v", got.Files, got.Quoted)
+	}
+}

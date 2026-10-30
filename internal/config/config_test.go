@@ -93,6 +93,8 @@ func TestParseErrors(t *testing.T) {
 		"zero results":       {"search_results: 0\n", fakeToken, "search_results"},
 		"too many results":   {"search_results: 11\n", fakeToken, "search_results"},
 		"negative cache cap": {"cache_max_bytes: -1\n", fakeToken, "cache_max_bytes"},
+		"zero file limit":    {"max_file_bytes: 0\n", fakeToken, "max_file_bytes"},
+		"negative file size": {"max_file_bytes: -1\n", fakeToken, "max_file_bytes"},
 		"bad cache age":      {"cache_max_age: soon\n", fakeToken, "cache_max_age"},
 		"negative cache age": {"cache_max_age: -1h\n", fakeToken, "cache_max_age"},
 		"old state_file key": {"state_file: ./data/access.json\n", fakeToken, "state_file"},
@@ -155,6 +157,15 @@ func TestParseCacheSettings(t *testing.T) {
 		}
 		if cfg.Database != c.db || cfg.CacheMaxBytes != c.maxBytes || cfg.CacheMaxAge != c.maxAge {
 			t.Errorf("%s: got %q %d %v", name, cfg.Database, cfg.CacheMaxBytes, cfg.CacheMaxAge)
+		}
+	}
+}
+
+func TestMaxFileBytes(t *testing.T) {
+	for yaml, want := range map[string]int64{"": 50 << 20, "max_file_bytes: 1048576\n": 1 << 20} {
+		cfg, err := Parse([]byte(yaml), env(fakeToken))
+		if err != nil || cfg.MaxFileBytes != want {
+			t.Errorf("%q: %d, %v; want %d", yaml, cfg.MaxFileBytes, err, want)
 		}
 	}
 }

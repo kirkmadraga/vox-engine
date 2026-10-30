@@ -36,6 +36,18 @@ func TestValidateFile(t *testing.T) {
 	}
 }
 
+func TestInspectFileCountsPackets(t *testing.T) {
+	s := newStream()
+	s.page([][]byte{frame20(8, 1), frame20(8, 2), frame20(8, 3)}, false)
+	p := filepath.Join(t.TempDir(), "three.opus")
+	if err := os.WriteFile(p, s.buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := InspectFile(p); err != nil || d != 3*FrameDuration {
+		t.Errorf("InspectFile = %v, %v; want 60ms", d, err)
+	}
+}
+
 // The committed test tone (assets/tone.opus) must be playable.
 func TestCommittedTestToneIsValid(t *testing.T) {
 	if err := ValidateFile(filepath.Join("..", "..", "assets", "tone.opus")); err != nil {
